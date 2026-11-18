@@ -249,7 +249,7 @@ Why can't the advertised TFLOPS be achieved? It's because it takes time to move 
 
 - Intra-node Network - is very fast, but difficult to take advantage of for large models - [Tensor parallelism](../training/model-parallelism/README.md#tensor-parallelism) and [sequence parallelism](../training/model-parallelism/README.md#sequence-parallelism) address part of this problem. ([more](../network/README.md#intra-node-networking)).
 
-- Inter-node Network - typically is too slow on most server setups - thus this is the key component to research! Efficient frameworks succeed to partially hide the comms overhead by overlapping compute and comms. But if comms take longer than compute, the comms are still the bottleneck. [more](#inter-node-network).
+- Inter-node Network - typically is too slow on most server setups - thus this is the key component to research! Efficient frameworks succeed to partially hide the comms overhead by overlapping compute and comms. But if comms take longer than compute, the comms are still the bottleneck. [more](#inter-node-network), and [how much of it frameworks expose in practice](../network/exposed-communication.md).
 
 - Storage IO is important primarily for feeding the DataLoader workers and saving the checkpoints. [more](#storage).
 
@@ -295,7 +295,7 @@ In general most (all?) accelerators are supported by major frameworks like PyTor
 
 For example, if your PyTorch application calls `torch.mm` - it should work everywhere, but if it includes custom CUDA kernels it'll only work on NVIDIA GPUs and may be on the recent AMD MI-series.
 
-- NVIDIA GPUs: all based on [CUDA](https://developer.nvidia.com/cuda/toolkit), which most training frameworks support. You can easily moved between different NVIDIA GPUs and most things would work the same.
+- NVIDIA GPUs: all based on [CUDA](https://developer.nvidia.com/cuda/toolkit), which most training frameworks support. You can easily move between different NVIDIA GPUs and most things would work the same.
 
 - AMD MI250/MI3xx: with PyTorch using [ROCm](https://pytorch.org/blog/pytorch-for-amd-rocm-platform-now-available-as-python-package/) you can run most CUDA-based software as is. This is really the only inter-operable accelerator with the NVIDIA stack.
 
