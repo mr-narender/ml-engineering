@@ -1,6 +1,10 @@
 # Exposed Communication by Parallelism Pattern
 
-In this chapter we explore the impact of performing concurrent communications and computation for various parallelism patterns. [comm-compute-overlap-bench.py](benchmarks/README.md#comm-compute-overlap-bench) was used to perform the measurements. This benchmark was run for multiple data and model parallelism patterns on one and four nodes, thus exercising both intra- and inter-node use cases. It ran a training step's collectives on their own CUDA streams next to the compute of a stack of transformer layers, and timed the whole step and each of its phases - forward, backward and after the optimizer step - 3 ways:
+In this chapter we explore the impact of performing concurrent communications and computation for various parallelism patterns. [comm-compute-overlap-bench.py](benchmarks/README.md#comm-compute-overlap-bench) was used to perform the measurements. This benchmark was run for multiple data and model parallelism patterns on one and four nodes, thus exercising both intra- and inter-node use cases.
+
+All the numbers in this chapter were measured over NVLink within 1 8x B200 node, and over NVLink and [EFA](README.md#efa) across 4 of them, with 32 layers of Llama-3.1-8B and 8192 tokens per GPU, unless it says otherwise. If you need to understand your particular use case on a specific cluster you use, I highly recommend that you perform your own measurements.
+
+The benchmark ran a training step's collectives on their own CUDA streams next to the compute of a stack of transformer layers, and timed the whole step and each of its phases - forward, backward and after the optimizer step - 3 ways:
 
 - **compute alone** - the step without its collectives
 - **comm alone** - the collectives without the compute
@@ -15,8 +19,6 @@ From these it reported what the communication cost the step, in 3 metrics:
 Compute and communication slow each other down because kernels running at the same time compete for the SMs, the GPU's streaming multiprocessors, and for the memory bandwidth.
 
 The benchmark has a pattern for each parallelism it measures, which the tables below name in their pattern column. Refer to [the benchmark's documentation](benchmarks/README.md#comm-compute-overlap-bench) to learn how to run each pattern and change its settings.
-
-All the numbers in this section were measured over NVLink within 1 8x B200 node, and over NVLink and EFA across 4 of them, with 32 layers of Llama-3.1-8B and 8192 tokens per GPU, unless it says otherwise. If you need to understand your particular use case on a specific cluster you use, I highly recommend that you perform your own measurements.
 
 ## Data-parallel patterns
 
@@ -191,7 +193,7 @@ Now let's analyze each dp pattern.
 
 DDP's bucket doesn't split a gradient: it closes once it reaches `bucket_cap_mb`, 25MiB by default, and Llama-3.1-8B's larger weights take 32MiB to 112MiB in bf16, so most weights get an all-reduce of their own: 5 per layer, 160 per step.
 
-With 16384 tokens per GPU, over 1 node, the same all-reduces exposed more than with 8192: traces with NVIDIA's nsys profiler show them slowing each compute kernel next to them as much as with 8192 tokens, but more compute kernels ran next to them in the longer backward. The all-reduces take SMs from the compute, but limiting them to fewer CTAs didn't help: with [`NCCL_MAX_CTAS`](README.md#nccl_min_ctas-and-nccl_max_ctas) at 8 instead of the 24 that NCCL picked, their comm alone took twice as long, and in 3 runs of each the step took about 10ms longer with 8192 tokens, where they no longer fit in backward, and only 0.7ms to 2.3ms shorter with 16384.
+With 16384 tokens per GPU, over 1 node, the same all-reduces exposed more than with 8192: traces with NVIDIA's [Nsight Systems](https://developer.nvidia.com/nsight-systems) (`nsys`) profiler show them slowing each compute kernel next to them as much as with 8192 tokens, but more compute kernels ran next to them in the longer backward. The all-reduces take SMs from the compute, but limiting them to fewer CTAs didn't help: with [`NCCL_MAX_CTAS`](README.md#nccl_min_ctas-and-nccl_max_ctas) at 8 instead of the 24 that NCCL picked, their comm alone took twice as long, and in 3 runs of each the step took about 10ms longer with 8192 tokens, where they no longer fit in backward, and only 0.7ms to 2.3ms shorter with 16384.
 
 Over 4 nodes the all-reduces ran twice as long during backward as in the comm alone, and about 27 of the 160 were still running or queued when backward's compute ended: the step waited about 30ms for them, against under 3ms over 1 node.
 
@@ -201,7 +203,7 @@ FSDP2 exposed the least communication over 4 nodes, and `fsdp` with `reshard_aft
 
 `reshard_after_forward=0` keeps the gathered parameters from forward to backward, 13GiB for 32 layers of Llama-3.1-8B, so backward only reduce-scatters, while the default `fsdp` all-gathers them again in backward.
 
-About 40% of what `fsdp`'s forward exposed isn't communication: FSDP2 copies each layer's gathered parameters out of the all-gather's buffer on the compute stream, 0.14ms per layer in a trace with NVIDIA's nsys profiler. The copies don't depend on the token count, so forward exposed about as much with 16384 tokens per GPU.
+About 40% of what `fsdp`'s forward exposed isn't communication: FSDP2 copies each layer's gathered parameters out of the all-gather's buffer on the compute stream, 0.14ms per layer in an `nsys` trace. The copies don't depend on the token count, so forward exposed about as much with 16384 tokens per GPU.
 
 On a shared communicator an all-gather waits for the reduce-scatter before it, as section 3.3.2 of the [PyTorch FSDP paper](https://arxiv.org/abs/2304.11277) explains, and `separate_rs_group=1` removes that wait. Over 1 node that made backward worse, as the two collectives running at once took 32 SMs each and slowed the matmuls next to them, but over 4 nodes, where the collectives take longer, it made the step faster, 44.91ms exposed against 48.36ms.
 
@@ -239,7 +241,7 @@ Only buckets far below the default cost more: 1.31e7 elements, 25MiB in bf16 lik
 
 ZeRO-3 exposed more than the default `fsdp`, 41.18ms against 34.17ms over 1 node and 66.89ms against 48.36ms over 4, with about as much communication alone, and over 1 node the difference was all in backward.
 
-In backward ZeRO-3's all-gathers share a communicator with its gradient reduce-scatters, so an all-gather that the next layer needs can wait for a reduce-scatter to finish, and the compute waits for the all-gather. FSDP2's all-gathers queue the same way, but each starts a whole layer before its compute needs it, while ZeRO-3's default `stage3_prefetch_bucket_size` of 5e7 elements is less than one of Llama-3.1-8B's largest weights, so it prefetches about one weight ahead. In traces with NVIDIA's nsys profiler over 4 nodes, about half of the time that ZeRO-3's compute waited for all-gathers went to those that had queued behind a reduce-scatter.
+In backward ZeRO-3's all-gathers share a communicator with its gradient reduce-scatters, so an all-gather that the next layer needs can wait for a reduce-scatter to finish, and the compute waits for the all-gather. FSDP2's all-gathers queue the same way, but each starts a whole layer before its compute needs it, while ZeRO-3's default `stage3_prefetch_bucket_size` of 5e7 elements is less than one of Llama-3.1-8B's largest weights, so it prefetches about one weight ahead. In `nsys` traces over 4 nodes, about half of the time that ZeRO-3's compute waited for all-gathers went to those that had queued behind a reduce-scatter.
 
 ZeRO-3's forward exposed a third more with 16384 tokens per GPU than with 8192, almost all of it as compute slowed by the all-gathers rather than waiting for them: in nsys traces over 1 node the forward's all-gathers took 27ms in the comm alone, but ran for 59ms next to the compute with 8192 tokens and 92ms with 16384, and the longer they ran next to it, the more compute they slowed.
 
@@ -455,7 +457,9 @@ The schedule can also give the all-to-alls more compute to overlap with, of whic
 
 #### DeepEP measured on a single node
 
-The `ep` pattern's `dispatcher=deepep` setting runs [DeepEP](https://github.com/deepseek-ai/DeepEP)'s dispatch and combine in place of the all-to-alls, if DeepEP is installed - no other pattern or setting needs it. Its dispatch sends each token once to each GPU that has any of its experts, and its kernels copy the token into the rows of each of those experts there, and in the combine sum the experts' weighted outputs back into one row per token. The `all_to_all` dispatcher does that work in its compute: it copies each token once per expert before the dispatch, sorts the copies it receives by expert before the expert matmuls and back after them, and sums each token's copies after the combine. This is DeepEP 2.5.0, built from commit [f6aa38f](https://github.com/deepseek-ai/DeepEP/commit/f6aa38fe06cd4a0489e7730365d4e0114970a2f3) of 2026-10-21, whose kernels run on NCCL's GPU-initiated networking and are compiled when first used. Both dispatchers below ran on NCCL 2.32.6, as this DeepEP needs a newer NCCL than PyTorch's own 2.30.7, and DeepEP gave its kernels 32 of each B200's 148 SMs.
+The `ep` pattern's `dispatcher=deepep` setting runs [DeepEP](https://github.com/deepseek-ai/DeepEP)'s dispatch and combine in place of the all-to-alls, if DeepEP is installed - no other pattern or setting needs it. Its dispatch sends each token once to each GPU that has any of its experts, and its kernels copy the token into the rows of each of those experts there, and in the combine sum the experts' weighted outputs back into one row per token. The `all_to_all` dispatcher, the default `dispatcher=nccl`, does that work in its compute: it copies each token once per expert before the dispatch, sorts the copies it receives by expert before the expert matmuls and back after them, and sums each token's copies after the combine.
+
+The DeepEP measured here is version 2.5.0, built from commit [f6aa38f](https://github.com/deepseek-ai/DeepEP/commit/f6aa38fe06cd4a0489e7730365d4e0114970a2f3) of 2026-10-21, whose kernels run on NCCL's GPU-initiated networking and are compiled when first used. Both dispatchers below ran on NCCL 2.32.6, as this DeepEP needs a newer NCCL than PyTorch's own 2.30.7, and DeepEP gave its kernels 32 of each B200's 148 SMs.
 
 Here is Qwen3-30B-A3B over 1 node with each dispatcher, at the token counts and sequence lengths of the `ep=8` table above, sorted by step time, ascending. Each row is the median of 3 runs:
 
@@ -548,9 +552,11 @@ The bubble was the same across the nodes as over 1 node: 2.6% to 3.1% with `pp=2
 
 ## Trading collective speed for compute: CTA policy
 
-NCCL's [CTA policy](README.md#cta-policy) sets how many SMs a collective takes from the compute running next to it: `default` as many as give the collective its best speed, `efficiency` the fewest that still give it a decent one, and `zero` none for `all_gather` and `all_to_all`, which it runs on the copy engines, the GPU's direct memory access (DMA) engines, when given symmetric memory. torch-dist-bench and comm-compute-overlap-bench set it with `--cta-policy`. Here is what each policy cost the collectives and the compute on an 8x B200 node.
+NCCL's [CTA policy](README.md#cta-policy) sets how many SMs a collective takes from the compute running next to it: `default` as many as give the collective its best speed, `efficiency` the fewest that still give it a decent one, and `zero` none for `all_gather` and `all_to_all`, which it runs on the copy engines, the GPU's direct memory access (DMA) engines, when given symmetric memory. torch-dist-bench and comm-compute-overlap-bench set it with `--cta-policy`, and run the collectives on symmetric memory with `--sym-mem`. Here is what each policy cost the collectives and the compute on an 8x B200 node.
 
-On an 8x B200 node (`torch=2.14.0+cu130`, `nccl=2.30.7`), in an nsys trace of a 256MiB `all_gather` with `--sym-mem`, `--cta-policy zero` replaced its 3-SM kernel with peer-to-peer memory copies. Here is the busbw that torch-dist-bench measured for each collective alone with `--sym-mem` under each CTA policy, sorted by payload, ascending:
+On this node, over NVLink, try `--cta-policy zero` with `--sym-mem` when compute-bound kernels, such as matmuls, spend much of their time next to a collective that NCCL runs on many SMs, like `all_to_all`, with payloads from 256MiB up: it frees the SMs for the compute, while the collective's busbw may rise or fall. `efficiency` matched `default` for both the collectives and the compute. In a whole step the gain can be smaller, larger, or come from elsewhere than the SMs, as the training steps at the end of this section show, so measure the step itself.
+
+On that node (`torch=2.14.0+cu130`, `nccl=2.30.7`), in an nsys trace of a 256MiB `all_gather` with `--sym-mem`, `--cta-policy zero` replaced its 3-SM kernel with peer-to-peer memory copies. Here is the busbw that torch-dist-bench measured for each collective alone with `--sym-mem` under each CTA policy, sorted by payload, ascending:
 
 `all_gather`:
 
@@ -660,9 +666,17 @@ With the pattern's default of `calls=1`, a single collective next to 20ms of mat
 
 In whole training steps, with 32 layers of Llama-3.1-8B, 8192 tokens per GPU and `--sym-mem`, `zero` didn't change how much `fsdp` exposed: `--sym-mem` already runs its 416MiB `all_gather`s on the copy engines, and its `reduce_scatter`s keep their kernels under every policy. `zero` cut `ds-zero3`'s exposed communication from about 40ms per step to about 35ms, over 3 runs of each, by moving its smaller `all_gather`s to the copy engines, but in nsys traces only about 1.3ms of that came from faster compute kernels: its `reduce_scatter` kernels, which keep their SMs under both policies, ran faster too.
 
-So on this node, over NVLink, try `--cta-policy zero` with `--sym-mem` when a collective that NCCL runs on many SMs, like `all_to_all`, runs next to compute-bound kernels for much of their time, with payloads from 256MiB up: it frees the SMs for some busbw. With smaller payloads the matmuls gain too, but the collectives lose more busbw, as the copy engines are slower to start. In a whole step the gain can be smaller, larger, or come from elsewhere than the SMs, as `fsdp` and `ds-zero3` show, so measure the step itself with `comm-compute-overlap-bench.py`'s patterns. None of this was measured across nodes.
+So on this node, over NVLink, try `--cta-policy zero` with `--sym-mem` when a collective that NCCL runs on many SMs, like `all_to_all`, runs next to compute-bound kernels for much of their time, with payloads from 256MiB up: it frees the SMs for the compute, while the collective's busbw may rise or fall. With smaller payloads the matmuls gain too, but the collectives lose more busbw, as the copy engines are slower to start. In a whole step the gain can be smaller, larger, or come from elsewhere than the SMs, as `fsdp` and `ds-zero3` show, so measure the step itself with `comm-compute-overlap-bench.py`'s patterns. None of this was measured across nodes.
 
-Whichever limit and policy a communicator gets, NCCL applies them to every collective for the whole run, and picks the CTAs under them from the collective's size and the topology, without knowing what compute runs next to it. But the best split of the SMs between communication and compute changes with the workload - the same 8-CTA limit made DDP's step slower with 8192 tokens per GPU and faster with 16384 in [DDP's exposed communication](#ddps-exposed-communication) - so a configuration that adapts to the workload is likely to do better than any fixed one, in training and in inference alike. A few systems already do this for their own fused kernels. [COMET](https://arxiv.org/abs/2502.19811), ByteDance's MoE kernels, which it says run on its large clusters, picks one of several precompiled kernels by the input's shape: on H100 its best number of communication thread blocks, out of 132, rose from 18 to 26 as the sequence grew from 4096 to 16384 tokens at TP=8, and was 46 at TP=4 with EP=2. [ParallelKittens](https://arxiv.org/abs/2511.13940) searches for the best split for each input size, and found that smaller inputs need proportionally more SMs for communication. [mKernel](https://github.com/uccl-project/mKernel) rebalances the split while its kernel runs, from how fast each side progresses. More such solutions keep appearing, so look for one that fits your stack, and until it adapts the split for you, measure a few CTA limits for each shape your job runs, by the whole step or the per-token latency rather than by the collective alone.
+Whichever limit and policy a communicator gets, NCCL applies them to every collective for the whole run, and picks the CTAs under them from the collective's size and the topology, without knowing what compute runs next to it. But the best split of the SMs between communication and compute changes with the workload - the same 8-CTA limit made DDP's step slower with 8192 tokens per GPU and faster with 16384 in [DDP's exposed communication](#ddps-exposed-communication) - so a configuration that adapts to the workload is likely to do better than any fixed one, in training and in inference alike.
+
+A few systems already adapt the split between communication and compute for their own fused kernels:
+
+- [COMET](https://arxiv.org/abs/2502.19811), ByteDance's MoE kernel system, which ByteDance says runs on its large clusters, picks one of several precompiled kernels by the input's shape: on H100 its best number of communication thread blocks (CTAs), out of H100's 132 SMs, rose from 18 to 26 as the sequence grew from 4096 to 16384 tokens at TP=8, and was 46 at TP=4 with EP=2.
+- [ParallelKittens](https://arxiv.org/abs/2511.13940) searches for the best split for each input size, and found that smaller inputs need proportionally more SMs for communication.
+- [mKernel](https://github.com/uccl-project/mKernel) rebalances the split while its kernel runs, from how fast each side progresses.
+
+More such solutions keep appearing, so look for one that fits your stack, and until one adapts the split for you, measure a few CTA limits for each shape your job runs, by the whole step or the per-token latency rather than by the collective alone.
 
 ## Further reading
 

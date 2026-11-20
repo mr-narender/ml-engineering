@@ -110,7 +110,9 @@ footnote: not all clusters will have external Internet connection available, e.g
 
 ### Backend networking
 
-Backend networking is to perform GPU-to-GPU connectivity which allows training and inference to scale to multiple accelerators (e.g. all-reduce, all-gather and other collective comms). This is the most important part of the AI cluster. Typically this would be either an [InfiniBand](#infiniband) or [RoCEv2 Ethernet](#rdma-networking). It then breaks down into [intra-node networking](#intra-node-networking) and [inter-node networking](#inter-node-networking) - the GPUs on the same node typically can communicate with each other at faster speed than with GPUs on other nodes. Here the typical top [unidirectional](#unidirectional-vs-bidirectional-duplex) speeds as of 2026-08 would be around 900GBps per accelerator for intra-node (NVLink 5, as on B200/B300) and 100GBps per accelerator, or 800GBps per node, for inter-node (8x ConnectX-8, as on DGX B300 XDR) - so about an order of magnitude apart per accelerator, a ratio that has held for several generations because both sides keep doubling together. That is the gap between the links; the gap you actually measure with a collective is much smaller, for reasons explained in [Inter-node speed depends on intra-node speed](#inter-node-speed-depends-on-intra-node-speed). There will be at least one backend connection per accelerator and at times there can be multiple connections per accelerator, especially if low bandwidth NICs are used.
+Backend networking provides the GPU-to-GPU connectivity that allows training and inference to scale to multiple accelerators (e.g. all-reduce, all-gather and other collective comms). This is the most important part of the AI cluster. Typically this would be either an [InfiniBand](#infiniband) fabric or a [RoCEv2 Ethernet](#rdma-networking) fabric. There will be at least one backend connection per accelerator and at times there can be multiple connections per accelerator, especially if low-bandwidth NICs are used.
+
+Backend networking then breaks down into [intra-node networking](#intra-node-networking) and [inter-node networking](#inter-node-networking) - the GPUs on the same node typically can communicate with each other at faster speed than with GPUs on other nodes. Here the typical top [unidirectional](#unidirectional-vs-bidirectional-duplex) speeds as of 2026-08 would be around 900GBps per accelerator for intra-node (NVLink 5, as on B200/B300) and 100GBps per accelerator, or 800GBps per node, for inter-node (8x ConnectX-8, as on DGX B300 XDR) - so about an order of magnitude apart per accelerator, a ratio that has held for several generations because both sides keep doubling together. That is the gap between the links; the gap you actually measure with a collective is much smaller, for reasons explained in [Inter-node speed depends on intra-node speed](#inter-node-speed-depends-on-intra-node-speed).
 
 footnote: not all providers will match the industry's standard networking speeds - on some the inter-node networking speed could be up to 10x slower. So always check what you get.
 
@@ -261,7 +263,7 @@ You will find the details analysis of each technology in the following sections.
 
 If one compares the latest generations of different intra-node networking technologies (see the following sections) PCIe is usually an order of magnitude behind.
 
-The table above is spec. What a PCIe link actually delivers is a separate question, and one nobody seems to publish - so here is a measurement. On a node of 8x H200 where each accelerator has its own PCIe 5 x16 link, [nvbandwidth](#nvlink-c2c) reports 55.43GBps host-to-device and 55.06GBps device-to-host, which is 88% and 87% of the 63GBps row above. The eight links came out within 0.10GBps of each other, with `nvbandwidth` reporting a coefficient of variation of 0.00.
+The table above is spec. What a PCIe link actually delivers is a separate question, and one nobody seems to publish - so here is a measurement. On a node of 8x H200 where each accelerator has its own PCIe 5 x16 link, [nvbandwidth](benchmarks/README.md#nvbandwidth) reports 55.43GBps host-to-device and 55.06GBps device-to-host, which is 88% and 87% of the 63GBps row above. The eight links came out within 0.10GBps of each other, with `nvbandwidth` reporting a coefficient of variation of 0.00.
 
 To reproduce, first confirm the generation and width, since the 63GBps figure only applies to PCIe 5 at x16:
 
@@ -277,6 +279,8 @@ then, with [nvbandwidth](benchmarks/README.md#nvbandwidth):
 ```
 
 caveat: `host_to_device_memcpy_ce` measures whatever the host-to-device path happens to be on that platform, so read it against the fabric the machine actually uses. On an x86 host with PCIe-attached SXM accelerators that path is PCIe, which is what the 88% above refers to. On a Grace-Blackwell system the very same testcase measures [NVLink-C2C](#nvlink-c2c) instead and reports several hundred GBps - same command, different fabric, an order of magnitude apart.
+
+On a bare-metal node with PCIe switches, check that ACS is disabled, or the traffic between the network adapters and the GPUs goes through the CPU - see [Disable Access Control Services](#disable-access-control-services).
 
 footnote: a released specification is not shipping silicon. As of 2026-07-30 [PCI-SIG](https://pcisig.com/specifications) lists `PCI Express Base Specification Revision 7.0` as released, while PCIe 8.0 exists only as a members-only draft, targeted for 2028. And even a finished spec takes years to reach products - PCIe 6.0 hardware didn't launch until August 2025, about three years after its spec was done. So read the last rows as where the standard is heading, not as what you can buy.
 
@@ -483,7 +487,7 @@ NVIDIA DGX A100 has 6 switches of 12 NVLinks for a total of 72.
 
 A [DGX H100 SuperPOD](https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-h100/latest/index.html) scalable unit contains 32 DGX H100 systems (256 GPUs), but each DGX remains its own in-node NVSwitch domain. The systems scale out over a separate Quantum-2 NDR400 InfiniBand compute fabric, so cross-node bandwidth must be described from the ConnectX-7/InfiniBand topology rather than by halving or summing the internal NVLinks. See [InfiniBand](#infiniband).
 
-Additionally, NVSwitch gen3 and higher comes with [NVIDIA Scalable Hierarchical Aggregation Reduction Protocol (SHARP)](#sharp) which can boost both the intra- and inter-node speeds for `all-reduce`. NCCL versions now have `NCCL_ALGO=NVLS` which boosts the intra-node `all-reduce` bandwidth up to 30%, and inter-node `all-reduce` by about 25%.
+Additionally, NVSwitch gen3 and higher comes with [NVIDIA Scalable Hierarchical Aggregation Reduction Protocol (SHARP)](#sharp) which can boost both the intra- and inter-node speeds for `all-reduce`. NCCL versions now have [`NCCL_ALGO=NVLS`](#nccl_algo) which boosts the intra-node `all-reduce` bandwidth up to 30%, and inter-node `all-reduce` by about 25%.
 
 Recently [GB200 NVL72](https://www.nvidia.com/en-us/data-center/gb200-nvl72/) has been introduced, which uses NVSwitch to put 72 Blackwell GPUs into a single node all inter-connected at NVLink 5 900GBps unidirectional speed. So instead of having a 8-gpu node, now we have a 72-gpu node (even though physically they don't all reside on the same board).
 
@@ -1190,7 +1194,7 @@ Let's bring both use cases together:
 
 on this 200Gbps inter-node setup the comms are 12x slower than the same performed on an intra-node NVLink connections.
 
-footnote: this arithmetic assumes the whole payload crosses the inter-node wire at one accelerator's NIC rate, which is far more pessimistic than what a real cluster does. For example, on 4x 8x B200 nodes (`p6-b200.48xlarge`, NCCL 2.30.7, EFA) a 4GiB `all-reduce` across 32 ranks selects `Ring`, measured 2026-10-03. Forcing `NCCL_ALGO=allreduce:ring` reproduced the default to within 0.1% - ~375GBps `busbw` both - while `NCCL_ALGO=allreduce:nvlstree` was available but 18% slower at ~308GBps. Yet that ring doesn't run at one NIC's rate: NCCL runs several rings at once, each leaving the node through a different accelerator's NIC, so all 8 NICs carry traffic and the reduction finishes about 4x sooner than this arithmetic predicts - see [Inter-node speed depends on intra-node speed](#inter-node-speed-depends-on-intra-node-speed). The algorithm is chosen per platform and per payload size, on that cluster by AWS's `NCCL_TUNER_PLUGIN=ofi` plugin rather than NCCL's own tuner, so check yours with `NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,TUNING`.
+footnote: this arithmetic assumes the whole payload crosses the inter-node wire at one accelerator's NIC rate, which is far more pessimistic than what a real cluster does. For example, on 4x 8x B200 nodes (`p6-b200.48xlarge`, NCCL 2.30.7, EFA) a 4GiB `all-reduce` across 32 ranks selects `Ring`, measured 2026-10-03. Forcing [`NCCL_ALGO=allreduce:ring`](#nccl_algo) reproduced the default to within 0.1% - ~375GBps `busbw` both - while `NCCL_ALGO=allreduce:nvlstree` was available but 18% slower at ~308GBps. Yet that ring doesn't run at one NIC's rate: NCCL runs several rings at once, each leaving the node through a different accelerator's NIC, so all 8 NICs carry traffic and the reduction finishes about 4x sooner than this arithmetic predicts - see [Inter-node speed depends on intra-node speed](#inter-node-speed-depends-on-intra-node-speed). The algorithm is chosen per platform and per payload size, on that cluster by AWS's `NCCL_TUNER_PLUGIN=ofi` plugin rather than NCCL's own tuner, so check yours with `NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,TUNING`.
 
 In this case even though we still have the much faster NVLink connection, we don't really benefit from it, since the whole ensemble communicates at the speed of the slowest link. And that slowest link is the inter-node connection.
 
@@ -1212,17 +1216,17 @@ As I have shown in these sections it should be possible to be able to do a back-
 
 ### How much inter-node bandwidth training needs
 
-It's critical to understand your particular model size and framework requirements with regard to network bandwidth, throughput and latency. If you underpay for network you will end up having idle gpus and thus you wasted money and time. If you overpay for very fast network, but your gpus are slow, then again you wasted money and time.
+It's critical to understand your particular model size and framework requirements with regard to network bandwidth, throughput and latency. If you underpay for network you will end up having idle GPUs and thus you wasted money and time. If you overpay for very fast network, but your GPUs are slow, then again you wasted money and time.
 
-If your network is very slow, your training is likely to be network-bound and many improvements in the training setup will not help with the improving performance.
+If your network is very slow, your training is likely to be network-bound and many improvements in the training setup will not help improve performance.
 
-Benchmarking `all_reduce`, e.g. with [torch-dist-bench.py](benchmarks/README.md#torch-dist-bench), you may get results anywhere between 5Gbps and 6700Gbps (as of 2026-10), and the payload size matters as much as the hardware does - `busbw` climbs by orders of magnitude from a small payload to a large one on the very same setup. In the measured tables under [Inter-node speed depends on intra-node speed](#inter-node-speed-depends-on-intra-node-speed), at a 16GiB payload a single B200 node reaches ~839GBps and four nodes ~377GBps - about 6700Gbps and 3000Gbps - while at 32KiB those same runs report 2.17GBps and 0.64GBps. So always compare like payload with like. The minimal speed to prevent being network bound will depend on your particular training framework, but typically you'd want at least 400Gbps or higher. Though we trained BLOOM on 50Gbps.
+The minimal speed to prevent being network bound will depend on your particular training framework, but typically you'd want at least 400Gbps. Though we trained BLOOM on 50Gbps.
 
-Frameworks that shard weights and optim stages like [DeepSpeed](https://github.com/deepspeedai/DeepSpeed) w/ ZeRO Stage-3 do a lot more traffic than frameworks like [Megatron-DeepSpeed](https://github.com/bigscience-workshop/Megatron-DeepSpeed) which do tensor and pipeline parallelism in addition to data parallelism. The latter ones only send activations across and thus don't need as much bandwidth. But they are much more complicated to set up and run.
+Frameworks that shard weights and optimizer states like [DeepSpeed](https://github.com/deepspeedai/DeepSpeed) w/ [ZeRO Stage-3](../training/model-parallelism/README.md#zero-data-parallelism) do a lot more traffic than frameworks like [Megatron-DeepSpeed](https://github.com/bigscience-workshop/Megatron-DeepSpeed) which do tensor and pipeline parallelism in addition to data parallelism. The latter ones send mostly activations across, plus the data-parallel gradients, and thus don't need as much bandwidth. But they are much more complicated to set up and run.
 
-Of course, an efficient framework will overlap communications and compute, so that while one stage is fetching data, the other stage in parallel runs computations. So as long as the communication overhead is smaller than compute the network requirements are satisfied and don't have to be super fantastic.
+Of course, an efficient framework will [overlap communications and compute](#comms-and-compute-overlap). So as long as the communication overhead is smaller than compute the network requirements are satisfied and don't have to be super fantastic.
 
-To get reasonable GPU throughput when training at scale (64+GPUs) with DeepSpeed ZeRO Stage 3 with V100s
+To get reasonable GPU throughput when training at scale (64+GPUs) with DeepSpeed ZeRO Stage 3 with V100s:
 
 1. 100Gbps is not enough
 2. 200-400Gbps is ok
@@ -1230,7 +1234,9 @@ To get reasonable GPU throughput when training at scale (64+GPUs) with DeepSpeed
 
 [full details](https://github.com/deepspeedai/DeepSpeed/issues/2928#issuecomment-1463041491)
 
-Of course, the requirements are higher for A100 gpu nodes and even higher for H100s (but no such benchmark information has been shared yet).
+Of course, the requirements are higher for A100 GPU nodes and even higher for H100s (but no such benchmark information has been shared yet for H100s; for an A100 data point see [Inter-node speed requirements to use ZeRO](../training/model-parallelism/README.md#inter-node-speed-requirements-to-use-zero)).
+
+When you benchmark `all_reduce` to check your network against these numbers, e.g. with [torch-dist-bench.py](benchmarks/README.md#torch-dist-bench), you may get results anywhere between 5Gbps and 6700Gbps (as of 2026-10), and the payload size matters as much as the hardware does - `busbw` climbs by orders of magnitude from a small payload to a large one on the very same setup. In the measured tables under [Inter-node speed depends on intra-node speed](#inter-node-speed-depends-on-intra-node-speed), at a 16GiB payload a single B200 node reaches ~839GBps and four nodes ~377GBps - about 6700Gbps and 3000Gbps - while at 32KiB those same runs report 2.17GBps and 0.64GBps. So always compare like payload with like.
 
 ### Exposed communication by parallelism pattern
 
@@ -1408,7 +1414,7 @@ Unidirectional P2P=Enabled Bandwidth (P2P Writes) Matrix (GB/s)
 ```
 746GBps out of 900GBps (82.8%) - very similar to NVLink4's efficiency.
 
-note: [NVIDIA/nvbandwidth](https://github.com/NVIDIA/nvbandwidth) is supposed to be a more detailed and correct benchmark to replace `p2pBandwidthLatencyTest`, but I found the latter to provide very similar results.
+note: [nvbandwidth](benchmarks/README.md#nvbandwidth) is supposed to be a more detailed and correct benchmark to replace `p2pBandwidthLatencyTest`, but I found the latter to provide very similar results.
 
 The following plot demonstrates how the actual bandwidth changes for all-reduce with the size of the message and the number of participating nodes (4 to 512 nodes):
 
@@ -1441,18 +1447,23 @@ This table should give a good sense for what scores you should expect for all-re
 
 If you're benchmarking a different collective the expected bandwidth can be very different from the above all-reduce results. [This presentation](https://www.nvidia.com/en-us/on-demand/session/gtc24-s62129/) also gives point-to-point communication bandwidth expectations.
 
-
-Another tool for bandwidth measurements on NVIDIA GPUs is [NVIDIA/nvbandwidth](https://github.com/NVIDIA/nvbandwidth).
-
 #### Symmetric memory
 
-Normally NCCL passes each payload through its own internal staging buffers, since it knows nothing about where the peers keep their data. If instead every rank's buffer sits at the same offset of a registered NCCL symmetric memory window, each GPU knows where its peers' buffers are, so NCCL (2.27+) can switch to its symmetric kernels: each GPU loads the data it needs straight from the other GPUs' buffers over NVLink and stores its results straight into them. This needs every rank to be reachable over direct NVLink. In PyTorch you allocate the buffers from a `torch.cuda.MemPool` created with the backend's `mem_allocator` and register the pool with `ProcessGroupNCCL.register_mem_pool(pool, symm=True)` - see [NCCL Symmetric Kernels](https://docs.pytorch.org/docs/stable/symmetric_memory.html#nccl-symmetric-kernels) in the PyTorch documentation. This needs `torch>=2.9`, the first release whose `register_mem_pool` takes `symm` - `torch==2.7` and `2.8` can register a pool too, but only as a local, non-symmetric buffer. torch 2.9.1 (NCCL 2.27.7), 2.10.0 and 2.11.0 (both NCCL 2.28.9) hang in `broadcast` on that path. torch 2.12.0 with NCCL 2.29.7 is the oldest cu130 release that finishes it, and the benchmark refuses `--sym-mem` below torch 2.12 and NCCL 2.29.
+Normally NCCL passes each payload through its own internal staging buffers, since it knows nothing about where the peers keep their data. If instead every rank's buffer sits at the same offset of a registered NCCL symmetric memory window - one local memory region per rank, which the ranks register with NCCL together - each GPU knows where its peers' buffers are, so NCCL can switch to its symmetric kernels: each GPU loads the data it needs straight from the other GPUs' buffers over NVLink and stores its results straight into them. This needs every rank to be reachable over direct NVLink.
 
-To measure it, add `--sym-mem` to [torch-dist-bench.py](benchmarks/torch-dist-bench.py), or `-R 2` to [nccl-tests](benchmarks/README.md#nccl-tests) if you call NCCL directly. Use it only if the workload you're benchmarking for all-reduces symmetric memory buffers too - registering them itself as above, or through a framework that does - otherwise that workload gets the regular bandwidth, and the symmetric memory numbers won't reflect what it actually gets.
+In PyTorch you allocate the buffers from a `torch.cuda.MemPool` created with the NCCL backend's `mem_allocator` and register the pool with `ProcessGroupNCCL.register_mem_pool(pool, symm=True)` - see [NCCL Symmetric Kernels](https://docs.pytorch.org/docs/stable/symmetric_memory.html#nccl-symmetric-kernels) in the PyTorch documentation.
+
+These are the versions it takes:
+
+- The symmetric kernels need NCCL 2.27+.
+- The `symm` argument of `register_mem_pool` needs `torch>=2.9` - `torch==2.7` and `2.8` can register a pool too, but only as a local, non-symmetric buffer.
+- The oldest `cu130` (CUDA 13.0) release that finishes a `broadcast` on this path is torch 2.12.0 with NCCL 2.29.7. torch 2.9.1 (NCCL 2.27.7), 2.10.0 and 2.11.0 (both NCCL 2.28.9) hang in that `broadcast`.
+
+To measure it, add `--sym-mem` to [torch-dist-bench.py](benchmarks/README.md#symmetric-memory), or `-R 2` to [nccl-tests](benchmarks/README.md#nccl-tests) if you call NCCL directly. Use it only if the workload you're benchmarking for all-reduces symmetric memory buffers too - registering them itself as above, or through a framework that does - otherwise that workload gets the regular bandwidth, and the symmetric memory numbers won't reflect what it actually gets.
 
 To check that the symmetric kernels are used, add `NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=TUNING`: each call that took one is logged as `AllReduce [Symmetric]: ... -> Kernel ...`.
 
-Here is the `all-reduce` `busbw` with and without it on an 8x B200 node and an 8x H200 node (both `torch=2.14.0+cu130`, `nccl=2.30.7`, the mean of 2 sweeps each).
+Here is the `all-reduce` `busbw` with and without it on an 8x B200 node and an 8x H200 node (both `torch=2.14.0+cu130`, `nccl=2.30.7`, the mean of 2 sweeps each), sorted by payload, ascending.
 
 **8x B200**:
 
@@ -1518,9 +1529,13 @@ Symmetric memory also cuts the latency of small all-reduces. On an 8x H200 node 
 
 ![torch-dist-bench latency 8x B200](benchmarks/images/torch-dist-bench-latency-8xb200.png)
 
-The fastest `all_to_all`, which MoE dispatch and combine use, is 16.4µs, against 23.5µs for `all_reduce`, and the fastest `reduce`, `gather` and `broadcast` are 11.6µs, 12.2µs and 12.3µs. `--sym-mem` brings `all_reduce`, `all_gather` and `reduce_scatter` down to 11.6µs, moves the others' fastest payloads by less than 1µs, and makes `batch_isend_irecv` 1.8µs slower. At the peak, `all_gather` reaches ~749GBps instead of ~662GBps, while `reduce_scatter` tops out at ~489GBps at 8GiB instead of ~690GBps at 16GiB.
+Without `--sym-mem`, `all_reduce` is the slowest of the nine collectives at small payloads. `--sym-mem` brings it down to the level of the fastest, but it doesn't help every collective, and at some payloads it hurts:
 
-`gather` peaks at ~763GBps at 1GiB, above its ~718GBps at 16GiB. `batch_isend_irecv` stays at 81-85GBps from 16MiB to 64MiB, under a third of any other collective there, and its median latency is flat at 834-839µs from 64MiB to 256MiB. It catches up only from 512MiB.
+- Without `--sym-mem`, the fastest `all_to_all`, which mixture-of-experts (MoE) dispatch and combine use, is 16.4µs, against 23.5µs for `all_reduce`, and the fastest `reduce`, `gather` and `broadcast` are 11.6µs, 12.2µs and 12.3µs.
+- `--sym-mem` brings `all_reduce`, `all_gather` and `reduce_scatter` down to 11.6µs, changes the other five collectives' fastest latencies by less than 1µs, and makes `batch_isend_irecv` 1.8µs slower.
+- With `--sym-mem`, `all_gather` peaks at ~749GBps instead of ~662GBps, while `reduce_scatter` tops out at ~489GBps at 8GiB instead of ~690GBps at 16GiB.
+
+Without `--sym-mem`, `gather` peaks at ~763GBps at 1GiB, above its ~718GBps at 16GiB. `batch_isend_irecv` stays at 81-85GBps from 16MiB to 64MiB, under a third of any other collective there, and its median latency is flat at 834-839µs from 64MiB to 256MiB. It catches up only from 512MiB.
 
 ### Inter-node speed depends on intra-node speed
 
@@ -1528,7 +1543,7 @@ The specs make inter-node networking look hopeless. On a P6-B200 node (AWS) each
 
 footnote: the spec for IB NDR400 for this type of a node is 50GBps per accelerator as well.
 
-The following table aggregates the `busbw` measurements for `all_reduce` measured with [torch-dist-bench.py](benchmarks/torch-dist-bench.py) on 1x and 4x P6-B200 nodes - 8x B200 per node, NVLink 5 inside, 8x 50GBps EFA v4 out - on `torch=2.14.0+cu130, cuda=13.0, nccl=2.30.7`, each column the mean of 2 sweeps. The `slowdown` column is the price of leaving the node, and the last one is the algorithm the 4-node run used at that payload, read from `NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=TUNING`:
+The following table aggregates the `busbw` measurements for `all_reduce` measured with [torch-dist-bench.py](benchmarks/torch-dist-bench.py) on 1x and 4x P6-B200 nodes - 8x B200 per node, NVLink 5 inside, 8x 50GBps EFA v4 out - on `torch=2.14.0+cu130, cuda=13.0, nccl=2.30.7`, each column the mean of 2 sweeps, the rows sorted by payload, ascending. The `slowdown` column is the price of leaving the node, and the last one is the algorithm the 4-node run used at that payload, read from `NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=TUNING`:
 
 | payload | 1 node     | 4 nodes    | slowdown | 4-node algorithm |
 | ------: | ---------: | ---------: | -------: | :--------------- |
@@ -1577,7 +1592,11 @@ footnote: mind the bases when doing this yourself - the benchmark prints `1GiB =
 
    At wire rate that shard would cross in `0.75GiB / 50GBps` = 16.1ms, against 22.21ms measured - so the exchange would effectively run at ~73% of wire rate, with NIC efficiency and any non-overlapping intra-node time both folded into that figure. The two cannot simply be additive: `16.1 + 10.03` = 26.1ms would exceed the measured time, so the intra-node phases would have to substantially overlap the exchange rather than queue behind it. So this model brackets the measurement - 16.1ms fully overlapped, 26.1ms fully serialized, with 22.21ms in between.
 
-Models 2 and 3 both fit the measurement, model 2 with the NICs at 94% of wire rate and model 3 at 73%, so the arithmetic alone does not tell you which one ran - only that the naive model 1 is badly wrong. Which of the two it is depends on the algorithm NCCL selected, and that is directly readable: `NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,TUNING` reports it, and forcing `NCCL_ALGO=allreduce:<algo>` and comparing against the default confirms it. On these nodes the 4GiB selection is `Ring`: forcing `NCCL_ALGO=allreduce:ring` reproduced the default within 0.1% - ~375GBps both - while `NCCL_ALGO=allreduce:nvlstree`, a hierarchical algorithm, ran 18% slower at ~308GBps. So model 2 is what ran, with each NIC sustaining 94% of its line rate. The selection is made per payload, as the algorithm column of the table shows: `Tree` up to 16MiB, `Ring` at 32-64MiB, `NVLSTree` at 128-256MiB and `Ring` again from 512MiB up. On this cluster the chooser is AWS's `NCCL_TUNER_PLUGIN=ofi` rather than NCCL's own tuner, and its own log line - `base Tuner is chosen for platform: p6-b200.48xlarge` - shows it keying off the instance type. A different instance gets a different tuner table, so the only way to know what your own runs pick is to read it.
+Models 2 and 3 both fit the measurement, model 2 with the NICs at 94% of wire rate and model 3 at 73%, so the arithmetic alone does not tell you which one ran - only that the naive model 1 is badly wrong. Which of the two it is depends on the algorithm NCCL selected, and that is directly readable: `NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,TUNING` reports it, and forcing `NCCL_ALGO=allreduce:<algo>` and comparing against the default confirms it.
+
+On these nodes the 4GiB selection is `Ring`: forcing `NCCL_ALGO=allreduce:ring` reproduced the default within 0.1% - ~375GBps both - while `NCCL_ALGO=allreduce:nvlstree`, a hierarchical algorithm, ran 18% slower at ~308GBps. So model 2 is what ran, with each NIC sustaining 94% of its line rate.
+
+NCCL's choice of algorithm is made per payload, as the table's `4-node algorithm` column shows: `Tree` up to 16MiB, `Ring` at 32-64MiB, `NVLSTree` at 128-256MiB and `Ring` again from 512MiB up. On this cluster the chooser is AWS's `NCCL_TUNER_PLUGIN=ofi` rather than NCCL's own tuner, and its own log line - `base Tuner is chosen for platform: p6-b200.48xlarge` - shows it keying off the instance type. A different instance gets a different tuner table, so the only way to know what your own runs pick is to read it in their own `NCCL_DEBUG` output.
 
 Either way, two effects rescue the inter-node case: the node's whole NIC bandwidth is used instead of a single link's, and only a fraction of the traffic crosses the slow links at all - 1 hop in 8 for this ring, 9.7% of the bytes for the hierarchical model. That is why the naive single-NIC arithmetic is wrong by 3.9x whichever algorithm runs. It is also why a fast intra-node fabric matters even for workloads whose bottleneck you would call inter-node - degrade NVLink and the inter-node numbers degrade with it.
 
@@ -1599,7 +1618,7 @@ footnote: this is the one place in this section where the `GiB` vs `GBps` base t
 
 Two things to keep in mind about the resulting number. It is comparable to a spec figure, whereas `busbw` is not comparable to anything. And it is a floor rather than a wire measurement, because it charges the whole elapsed time to the NICs, including the ring's fill and drain and any time they wait on NVLink - the true wire rate is somewhat higher than what comes out.
 
-It also only reaches its plateau at large payloads. The same 4-node measurements converted, sorted by payload ascending - only the `Ring` rows, because the `Tree` and `NVLSTree` rows would each need their own derivation:
+It also only reaches its plateau at large payloads. The same 4-node measurements converted, sorted by payload, ascending - only the `Ring` rows, because the `Tree` and `NVLSTree` rows would each need their own derivation:
 
 | payload | algorithm | 4-node<br>`busbw`<br>GBps | per-accel.<br>GBps | % of spec |
 | ------: | :-------- | ------------------------: | -----------------: | --------: |
@@ -1614,7 +1633,9 @@ It also only reaches its plateau at large payloads. The same 4-node measurements
 
 `% of spec` is against the 50GBps of inter-node bandwidth per accelerator on this node type. Below about 1GiB it falls off a cliff, and at 32MiB a perfectly healthy fabric reports 35.6% - which is worth remembering before reading anything into a small-payload number.
 
-Now the caveat that matters most: these percentages describe this system, and they may or may not translate to another one. The conversion itself is topology and algorithm only - `g` accelerators per node, `k` nodes, `n` ranks, no link speeds appear in it - so that part transfers anywhere. The *value* it produces does not, because it depends on how the intra-node and inter-node fabrics are balanced against each other, and that balance is a property of the node type. B300 shows how far it can shift without even changing accelerator generation: it keeps [NVLink 5](#nvlink) at the same 900GBps per accelerator as B200, while its inter-node side is twice as fast - 800Gbps per accelerator against B200's 400Gbps. Whatever the algorithm, the inter-node time shrinks in proportion while the NVLink time doesn't move at all, so a larger share of the elapsed time is intra-node work, and a figure that charges all of that time to the NICs has to be read differently - and the tuner may well pick a different algorithm there to begin with. What it actually comes out as is unknown - this benchmark has not been run on a B300 cluster - so derive the number from that system's own measurements instead of carrying 94% across.
+Now the caveat that matters most: these percentages describe this system, and they may or may not translate to another one. The conversion itself is topology and algorithm only - `g` accelerators per node, `k` nodes, `n` ranks, no link speeds appear in it - so that part transfers anywhere. The *value* it produces does not, because it depends on how the intra-node and inter-node fabrics are balanced against each other, and that balance is a property of the node type.
+
+B300 shows how far that balance can shift without even changing accelerator generation: it keeps [NVLink 5](#nvlink) at the same 900GBps per accelerator as B200, while its inter-node side is twice as fast - 800Gbps per accelerator against B200's 400Gbps. Whatever the algorithm, the inter-node time shrinks in proportion while the NVLink time doesn't move at all, so a larger share of the elapsed time is intra-node work, and a figure that charges all of that time to the NICs has to be read differently - and the tuner may well pick a different algorithm there to begin with. What the per-accelerator rate actually comes out as there is unknown - this benchmark has not been run on a B300 cluster - so derive the number from that system's own measurements instead of carrying 94% across.
 
 footnote: the conversion depends on the algorithm - `busbw / g` for model 2's ring and `busbw * (k-1)/(n-1)` for model 3's hierarchical exchange, see [Inter-node speed depends on intra-node speed](#inter-node-speed-depends-on-intra-node-speed) - and NCCL picks the algorithm per payload size, so capture `NCCL_DEBUG=INFO NCCL_DEBUG_SUBSYS=INIT,TUNING` alongside the numbers. Applying the wrong one is not a small error: the hierarchical formula would have put the 16GiB row above at 73% instead of 94%.
 
@@ -1638,6 +1659,8 @@ As it's often not easy to benchmark hundreds of nodes, often we try to benchmark
 
 > Extrapolating at scale is not that hard for ring and tree (we have a function in `tuning.cc` predicting it, based on the ring linear latency and the tree log latency with reduced BW). Now as you scale, there are many factors which may cause your real performance to be very far off the prediction, like routing. Also note on an IB network you'll be able to use SHARP; that way your latency stays mostly constant as you scale, your bandwidth doesn't degrade much either, and you're always better than both ring and tree.
 
+By the formulas in [Which collective to measure latency with](#which-collective-to-measure-latency-with), going from 4 nodes to 400 makes the ring's latency 100 times as high, while the tree's is at most ~4.3 times as high.
+
 ### Latency
 
 Latency tells us how long it takes to send or receive a message. It has an inverse relationship with throughput - the faster is the throughput the lower is the latency.
@@ -1649,9 +1672,13 @@ Here is an old but good plot demonstrating how the latencies change with message
 
 Typically the more "hops" the message has to travel, the bigger the latency. 2 accelerators residing on the same node and connected directly to each other (e.g., NVLink) will have the least amount of latency. If their communication path traverses a PCIe switch the latency will be bigger. 2 accelerators residing on 2 different nodes sharing a single switch will have a bigger latency because there is a switch to traverse. The further they get away from each other, the more switches the message has to travel through, the bigger the latency.
 
-For small payloads the latency is the number that matters, as they move next to nothing: on an 8x H200 node (`torch=2.14.0+cu130`, `nccl=2.30.7`) an 8B all-reduce still takes 15µs in [torch-dist-bench.py](benchmarks/README.md#latency), and every payload up to 512KiB takes 15-23µs, so a faster link wouldn't help them - fewer calls or cheaper ones would. This adds up fast in inference: a model served with tensor parallelism over 8 accelerators does 2 all-reduces per layer for every generated token, and with a hidden size of 8192 in bf16 a batch of up to 32 tokens makes each a 16-512KiB all-reduce, right in that flat range - so an 80-layer model waits at least 160 x 15µs = 2.4ms per token on all-reduces alone, however fast its links. Training has small all-reduces too, to sync flags, scalars or loss values across ranks, and MoE pays the same toll on the [all-to-all](#collectives-other-than-all-reduce) of its token routing.
+For small payloads the latency is the number that matters, as they move next to nothing. On an 8x H200 node (`torch=2.14.0+cu130`, `nccl=2.30.7`) an 8-byte all-reduce still takes 15µs in [torch-dist-bench.py](benchmarks/README.md#latency), and every payload up to 512KiB takes 15-23µs, so a faster link wouldn't help them - fewer calls or cheaper ones would.
 
-Here is the all-reduce latency on one 8x B200 node and on 4 of them, from the same run as the [example output of torch-dist-bench.py](benchmarks/README.md#torch-dist-bench):
+This per-call cost adds up fast in inference. A model served with [tensor parallelism](../training/model-parallelism/README.md#tensor-parallelism) over 8 accelerators does 2 all-reduces per layer for every generated token. With a hidden size of 8192 in bf16, each token in the batch adds 16KiB (8192 x 2 bytes) to an all-reduce, so a batch of up to 32 tokens makes each a 16-512KiB all-reduce, right in that flat range. An 80-layer model thus does 2 x 80 = 160 all-reduces per token and waits at least 160 x 15µs = 2.4ms on them alone, however fast its links.
+
+Training has small all-reduces too, to sync flags, scalars or loss values across ranks, and [MoE](../training/model-parallelism/README.md#expert-parallelism) models pay the same toll on the [all-to-all](#collectives-other-than-all-reduce) of their token routing.
+
+Here is the all-reduce latency on one 8x B200 node and on 4 of them, from the same run as the [example output of torch-dist-bench.py](benchmarks/README.md#torch-dist-bench), sorted by payload, ascending:
 
 | payload | 8 ranks<br>median | 8 ranks<br>p99 | 32 ranks<br>median | 32 ranks<br>p99 | 32 / 8<br>median |
 | ------: | ----------------: | -------------: | -----------------: | --------------: | ---------------: |
@@ -1745,14 +1772,14 @@ If you use a shared HPC environment, or even if you have your own cluster but sh
 
 This situation unfortunately makes it extremely difficult to finetune the performance of your training setup. Since every time you run a test the TFLOPS will vary, so how do you do the optimization? This is at least the situation with SLURM-based clusters. Apparently when Kubernetes is used, one can use cluster namespaces to segregate the network.
 
-case study: we had this issue at JeanZay HPC when we were doing preliminary experiments before we started training BLOOM-176B. As that HPC has many users it was pretty much impossible to do speed optimizations, as even running the exact same setup again and again gave different throughput results. Luckily just before we launched BLOOM-176B training we were given an exclusive access to the new at that time A100 partition so we were the only users and we were able to greatly optimize the throughput.
+case study: we had this issue at JeanZay HPC when we were doing [preliminary experiments](https://github.com/bigscience-workshop/bigscience/tree/master/train/tr8-104B-wide) before we started training BLOOM-176B. As that HPC has many users it was pretty much impossible to do speed optimizations, as even running the exact same setup again and again gave different throughput results. Luckily just before we launched BLOOM-176B training we were given an exclusive access to the new at that time A100 partition so we were the only users and we were able to greatly optimize the throughput.
 
 
 ## Disable Access Control Services
 
-PCI Access Control Services (ACS) used for IO virtualization (also known as VT-d or IOMMU) force P2P PCIe transactions to go up through the PCIe Root Complex, which does not enable GDS to bypass the CPU on paths between a network adapter or NVMe and the GPU in systems that include a PCIe switch.
+PCI Access Control Services (ACS) used for IO virtualization (also known as VT-d or IOMMU) force P2P PCIe transactions to go up through the PCIe Root Complex, which does not enable GPUDirect RDMA and [GPUDirect Storage (GDS)](https://docs.nvidia.com/gpudirect-storage/) to bypass the CPU on paths between a network adapter or NVMe and the GPU in systems that include a PCIe switch. For NCCL this can cause a significant performance reduction or even a hang.
 
-For the optimal GDS performance, disable ACS by following these instructions [here](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting.html#pci-access-control-services-acs). Here are some [additional notes](https://docs.nvidia.com/gpudirect-storage/best-practices-guide/index.html)
+For the optimal NCCL and GDS performance, disable ACS by following these instructions [here](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/gpu_troubleshooting.html#pci-access-control-services-acs). Here are some [additional notes](https://docs.nvidia.com/gpudirect-storage/best-practices-guide/index.html)
 
 Please note that if you're using Virtual machines you can't disable ACS as it's a required feature. To run with maximum performance inside virtual machines, Address Translation Service (ATS) needs to be enabled in network adapters.
 
@@ -1856,7 +1883,12 @@ In order to find the best performance to experiment with different values agains
 
 ### CTA policy
 
-Each CTA runs on one SM. NCCL runs each collective as a kernel of one CTA per channel, and the compute kernels running at the same time can't use those SMs. NCCL picks how many CTAs each collective's kernel uses, up to a limit, which defaults to 64 since NCCL 2.25: on an 8x B200 node, `all_to_all` took 32 and the symmetric-memory `all_gather` 3. PyTorch runs the collectives of each process group on an NCCL communicator, and its config's `maxCTAs` field lowers that limit, as `max_ctas` in the example above. The `NCCL_MAX_CTAS` environment variable sets the limit for every communicator, and silently replaces their `maxCTAs`, even a lower one, logging it only with `NCCL_DEBUG=INFO`. Neither can raise the limit above its default.
+NCCL runs each collective as a kernel of one [CTA](#nccl_min_ctas-and-nccl_max_ctas) per channel, which is why `NCCL_MAX_CTAS` was once named `NCCL_MAX_NCHANNELS`. Each CTA runs on one SM, and the compute kernels running at the same time can't use those SMs.
+
+NCCL picks how many CTAs each collective's kernel uses, up to a limit, which defaults to 64 since NCCL 2.25: on an 8x B200 node, `all_to_all` took 32 and the symmetric-memory `all_gather` 3. There are two ways to set that limit, and neither can raise it above its default:
+
+- PyTorch runs the collectives of each process group on an NCCL communicator. Its config's `maxCTAs` field lowers that limit - `max_ctas` in the example in [`NCCL_MIN_CTAS` and `NCCL_MAX_CTAS`](#nccl_min_ctas-and-nccl_max_ctas).
+- The `NCCL_MAX_CTAS` environment variable sets the limit for every communicator, and silently replaces their `maxCTAs`, even a lower one, logging it only with `NCCL_DEBUG=INFO`.
 
 NCCL>=2.28 can also change how many CTAs NCCL picks for each collective under that limit, with the `CTAPolicy` field of a communicator's config, which PyTorch sets as `cta_policy` in the same `config` as `max_ctas`, and which [torch-dist-bench](benchmarks/README.md#cta-policy) and [comm-compute-overlap-bench](benchmarks/README.md#comm-compute-overlap-bench) set with their `--cta-policy` flag:
 
