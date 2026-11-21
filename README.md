@@ -1,5 +1,9 @@
 # Machine Learning Engineering Open Book
 
+<!-- not-in-ebook-start -->
+<a href="#ebook-versions-of-the-book"><img src="images/Machine-Learning-Engineering-book-cover-200x259.png" align="right" width="200" height="259" alt="Machine Learning Engineering Open Book cover"></a>
+<!-- not-in-ebook-end -->
+
 This is an open collection of methodologies, tools and step by step instructions to help with successful training and fine-tuning of large language models and multi-modal models and their inference.
 
 This is a technical material suitable for LLM/VLM training engineers and operators. That is the content here contains lots of scripts and copy-n-paste commands to enable you to quickly address your needs.
@@ -75,9 +79,12 @@ I will try to rebuild these once in a few weeks or so, but if you want the lates
 Thanks to HuggingFace for giving me permission to host my book's ebook formats at the [HF hub](https://huggingface.co/stas/ml-engineering-book).
 
 
-## SKILL.md for AI agents
+## Skills for AI agents
 
-I maintain a [SKILL.md](./SKILL.md) file that you can use to teach your AI agent to train and operate large-scale ML models better.
+I maintain two [SKILL.md](skills/README.md) files that you can use to teach your AI agent:
+
+- [Machine Learning Engineering](skills/ml-engineering/SKILL.md) — train and operate large-scale ML models.
+- [Evaluate a GPU cluster](skills/evaluate-cluster/SKILL.md) — trial-node / acceptance loop: compute, network, and storage, then a markdown report.
 
 See also the companion skills: [The Art of Debugging](https://github.com/stas00/the-art-of-debugging/blob/master/SKILL.md) and [Stas' Python Cookbook](https://github.com/stas00/python-cookbook/blob/master/SKILL.md).
 
@@ -113,7 +120,7 @@ Things that you are likely to need to find quickly and often.
 
 Tools:
 
-- [all_reduce_bench.py](network/benchmarks/all_reduce_bench.py) - a much easier way to benchmark network throughput than nccl-tests.
+- [torch-dist-bench.py](network/benchmarks/torch-dist-bench.py) - a much easier way to benchmark network throughput than nccl-tests (used to be called `all_reduce_bench.py`).
 - [torch-distributed-gpu-test.py](debug/torch-distributed-gpu-test.py) - a tool to quickly test your inter-node connectivity
 - [mamf-finder.py](compute/accelerator/benchmarks/mamf-finder.py) - what is the actual TFLOPS measurement you can get from your accelerator.
 

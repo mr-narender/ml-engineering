@@ -35,6 +35,10 @@ Typically, as long as the training doesn't crash, these errors often indicate is
 
 The full list of Xid Errors and their interpretation can be found [here](https://docs.nvidia.com/deploy/xid-errors/latest/index.html).
 
+Many Xid log lines carry far more fields than the one above, and they are cryptic. [Xid 31 MMU Faults: What Causes Them and How to Fix Production GPU Crashes](https://www.abhik.ai/articles/gpu-xid31-mmu-faults) is a good example of how to decipher one: it decodes every field of an Xid 31 line from `dmesg` - the faulting engine and hardware unit, the virtual address, `FAULT_PDE` vs `FAULT_PTE` and the access type - and follows them to the cause, a use-after-free between the PyTorch, CuPy and NVDEC memory allocators. It also shows that not every Xid is a hardware problem - this one was caused by software.
+
+NVIDIA's [Xid Catalog](https://docs.nvidia.com/deploy/xid-errors/analyzing-xid-catalog.html) goes further for Ampere and newer GPUs: for each Xid it lists which GPUs can log it, what triggers it, and what to do about it - an immediate action, such as `RESTART_APP` or `CONTACT_SUPPORT`, and a follow-up one, such as `CHECK_APP/CUDA`. It can be downloaded as a spreadsheet, which helps when mapping the Xids in your logs to actions automatically. For Xid 13 and 31, which it says are typically bugs in the application, its first recommendation is Compute Sanitizer's `memcheck` - see [Debugging CUDA kernel memory errors with `compute-sanitizer`](../../../debug/pytorch.md#debugging-cuda-kernel-memory-errors-with-compute-sanitizer) for how to run it on a PyTorch program.
+
 You can run `nvidia-smi -q` and see if there are any error counts reported. For example, in this case of Xid 63, you will see something like:
 
 ```
@@ -421,6 +425,22 @@ If you keep on getting the same broken node - one trick to overcoming this is al
 This method is extra-crucial for when GPUs don't fail right away but after some use so it is non-trivial to see that there is a problem. Even if you reported this node to the cloud provider the technician may not notice the problem right away and put the bad node back into circulation. So if you're not using a static cluster and tend to get random VMs on demand you may want to keep a log of bad UUIDs and know you have got a lemon immediately and not 10 hours into the node's use.
 
 Cloud providers usually have a mechanism of reporting bad nodes. Therefore other than discarding a bad node, it'd help yourself and other users to report bad nodes. Since most of the time users just discard the bad nodes, the next user is going to get them. I have seen users getting a very high percentage of bad nodes in some situations.
+
+
+### How to find a straggler GPU
+
+A straggler is a GPU that works correctly but slower than its peers: it throws no Xid errors and its health counters read clean, yet any job that runs its GPUs in lockstep runs at its pace. [Straggler finder](../benchmarks/README.md#straggler-finder) finds them by running a training step on every GPU of every node at once, and [How one straggler was found](../benchmarks/README.md#how-one-straggler-was-found) shows why neither DCGM nor a matmul benchmark caught one on a B200 node.
+
+Once the finder has flagged a GPU, record what identifies the GPU itself and not only its index - an index means something only together with the node, and node names get recycled - with the flagged GPU's index in place of `3`:
+
+```bash
+nvidia-smi -i 3 --format=csv \
+  --query-gpu=index,uuid,serial,pci.bus_id,vbios_version
+```
+
+Then exclude the node from your job and report the GPU to your provider with that UUID and serial, together with the per-GPU numbers - "this GPU is 5% slower at compute than its 31 peers on the same workload" is something a technician can check, while "my job is slow" is not. See [How to detect if you get the same broken node again and again](#how-to-detect-if-you-get-the-same-broken-node-again-and-again) for keeping track of UUIDs, so that you recognize the same GPU if it comes back to you.
+
+Note: the GPU index that `nvidia-smi` prints counts from 0, and so does `CUDA_VISIBLE_DEVICES`, but the two orders are only the same if `CUDA_DEVICE_ORDER=PCI_BUS_ID` is set or the driver happens to enumerate them that way. Check by printing `torch.cuda.get_device_properties(i).uuid` from your program and comparing it with `nvidia-smi`'s UUID before you report a GPU by its index.
 
 
 ## Metrics

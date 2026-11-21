@@ -249,7 +249,7 @@ Why can't the advertised TFLOPS be achieved? It's because it takes time to move 
 
 - Intra-node Network - is very fast, but difficult to take advantage of for large models - [Tensor parallelism](../training/model-parallelism/README.md#tensor-parallelism) and [sequence parallelism](../training/model-parallelism/README.md#sequence-parallelism) address part of this problem. ([more](../network/README.md#intra-node-networking)).
 
-- Inter-node Network - typically is too slow on most server setups - thus this is the key component to research! Efficient frameworks succeed to partially hide the comms overhead by overlapping compute and comms. But if comms take longer than compute, the comms are still the bottleneck. [more](#inter-node-network).
+- Inter-node Network - typically is too slow on most server setups - thus this is the key component to research! Efficient frameworks succeed to partially hide the comms overhead by overlapping compute and comms. But if comms take longer than compute, the comms are still the bottleneck. [more](#inter-node-network), and [how much of it frameworks expose in practice](../network/exposed-communication.md).
 
 - Storage IO is important primarily for feeding the DataLoader workers and saving the checkpoints. [more](#storage).
 
@@ -277,10 +277,10 @@ Available, but locks you in:
 
 Not yet available:
 
-  * NVIDIA Rubin - specs published but still marked preliminary
+  * NVIDIA Rubin - in full production and shipping to select enterprise customers (CoreWeave limited availability, Cognition running production workloads); no self-serve cloud rental or public pricing yet as of 2026-10, first hyperscaler GA (Google Cloud A5X) expected 2026-11
   * AMD MI455X - Helios volume deployments expected 2H-2026
   * SambaNova SN50 - shipping "in the second half of 2026"; SN40L is the current part
-  * Intel Crescent Island - inference GPU, customer sampling announced for H2-2026; no published TFLOPS
+  * Intel GPU D-series / D270 (Crescent Island) - inference GPU, launched OCP 2026, customer sampling H2-2026; 160GB LPDDR5X (ODM up to 480GB) @ 1.5TBps, FP8 1.3 PFLOPS (only published compute figure)
 
 Regional:
 
@@ -295,7 +295,7 @@ In general most (all?) accelerators are supported by major frameworks like PyTor
 
 For example, if your PyTorch application calls `torch.mm` - it should work everywhere, but if it includes custom CUDA kernels it'll only work on NVIDIA GPUs and may be on the recent AMD MI-series.
 
-- NVIDIA GPUs: all based on [CUDA](https://developer.nvidia.com/cuda/toolkit), which most training frameworks support. You can easily moved between different NVIDIA GPUs and most things would work the same.
+- NVIDIA GPUs: all based on [CUDA](https://developer.nvidia.com/cuda/toolkit), which most training frameworks support. You can easily move between different NVIDIA GPUs and most things would work the same.
 
 - AMD MI250/MI3xx: with PyTorch using [ROCm](https://pytorch.org/blog/pytorch-for-amd-rocm-platform-now-available-as-python-package/) you can run most CUDA-based software as is. This is really the only inter-operable accelerator with the NVIDIA stack.
 
@@ -322,7 +322,7 @@ Also in general most ML code could be compiled into cross-platform formats like 
 | A100  |                       312 |                2.5 |                300 |                     2 |
 | H100  |                       989 |                  8 |                450 |                     3 |
 | B200  |                      2250 |                 18 |                900 |                     6 |
-| Rubin |                      4000 |                 32 |               1800 |                    12 |
+| Rubin |                      4000 |                 32 |               1500 |                    10 |
 
 - You can see that A100 was 2.5 faster than V100, and H100 is ~3x faster than A100. But the intra-node speed of NVLink has only increased by 150GBps each generation. NVLink 5.0 doubled the speed over NVLink 4.0 so it catches up a little bit with the compute speed ups. But the speed up is still insufficient.
 
@@ -343,7 +343,7 @@ Also in general most ML code could be compiled into cross-platform formats like 
 
 NVIDIA:
 
-- Some have a lot of NVLinks, others less, but typically plenty with 1800GBps (14.4Tbps) unidirectional bandwidth for Rubin,
+- Some have a lot of NVLinks, others less, but typically plenty with 1500GBps (12Tbps) unidirectional bandwidth for Rubin,
 900GBps (7.2Tbps) for B200/B300,
 450GBps (3.6Tbps) for H100/H200, 300GBps for A100 nodes.
 
@@ -410,6 +410,20 @@ This is probably the least worrisome component.
 - Even more cores for DL workers if you have complex and/or slow DL transforms (CV)
 
 - Most of the compute happens on GPUs
+
+### Quantum computing
+
+There is a lot of interest and investment in quantum computing, but it isn't relevant to ML training or inference yet.
+
+- Today's machines have at most a few dozen error-corrected qubits, and they have beaten classical computers only on narrow physics simulations.
+
+- A quantum processing unit (QPU) can't be used alone: it needs CPUs and GPUs to control it, to correct its errors as it runs and to run the classical parts of every program. So the future of compute is QPUs, GPUs and CPUs working together.
+
+- The first fault-tolerant machines, able to run long computations without the errors piling up, are on [IBM](https://www.ibm.com/roadmaps/quantum/)'s and [Quantinuum](https://www.quantinuum.com/company/roadmaps)'s roadmaps for 2029, and [Google](https://ec.europa.eu/info/law/better-regulation/api/download/090166e51d84b35d) expects one in 2030 or later.
+
+- ML is a poor fit even for those: an optimistic future quantum computer would still read data about 10,000 times slower than a GPU, so it suits problems with little data and a lot of compute rather than training on trillions of tokens ([Hoefler, Häner and Troyer](https://cacm.acm.org/research/disentangling-hype-from-practicality-on-realistically-achieving-quantum-advantage/)). Its first uses in ML will most likely be in modeling nature, e.g. molecules and materials in chemistry, which are quantum systems themselves, rather than in deep learning.
+
+So useful quantum computing is still 3-5 years away, and for ML probably further - worth following, but not worth planning your compute around.
 
 
 ## Impress others with your ML instant math
