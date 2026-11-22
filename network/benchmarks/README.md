@@ -562,13 +562,17 @@ The benchmark exits if a trial computes inf or NaN on any rank, in the step's ou
 
 In the compute alone of the tensor, sequence, context and expert parallelism patterns, `comm-compute-overlap-bench.py` replaces the output of each collective call with a stand-in: the output that the same call produced in a step with the collectives, so that the compute alone and the overlapped step compute on identical matrices.
 
-With [`cp-rsa`](../exposed-communication.md#other-parallelism-patterns), a context-parallel pattern based on ring attention, and 2048 tokens per GPU on an 8x B200 node, turning off its CUDA graphs (`--set cuda_graphs=0`) made the host take longer to queue each ring step's attention kernels than the GPU took to run them. In an nsys trace of the compute alone, the compute stream ran kernels for ~133-136ms of trials that took ~173-249ms, over the 8 GPUs and 2 trials, and every kernel that followed an idle gap started within 4µs of the end of the call that launched it. The tracing itself adds host time to each launch: untraced, the compute alone took ~204ms.
+With [`cp-rsa`](../exposed-communication.md#other-parallelism-patterns), a context-parallel pattern based on ring attention, and 2048 tokens per GPU on an 8x B200 node, turning off its CUDA graphs (`--set cuda_graphs=0`) made the host take longer to queue each ring step's attention kernels than the GPU took to run them. In an NVIDIA [Nsight Systems](../../debug/pytorch.md#nvidia-nsight-systems) (`nsys`) trace of the compute alone, the compute stream ran kernels for ~133-136ms of trials that took ~173-249ms, over the 8 GPUs and 2 trials, and every kernel that followed an idle gap started within 4µs of the end of the call that launched it. The tracing itself adds host time to each launch: untraced, the compute alone took ~204ms.
 
 In the same job, queuing each ring step's attention as a CUDA graph brought the compute alone down to ~144ms, and its trace had the compute stream busy for ~134-138ms of ~141-145ms. At 4096 tokens the graphs changed the compute alone by 0.2%, ~330ms against ~331ms.
 
 When the GPU runs a step faster than the host can queue it, the compute alone measures the host: without the graphs, `cp-rsa` exposed 83% of its communication at 2048 tokens, against 40% with them in that job.
 
 nsys traces of the other patterns of [Other parallelism patterns](../exposed-communication.md#other-parallelism-patterns), each at its smallest token count, had the compute stream idle for 1.3-6.4% of the compute alone, except `ep` with Qwen3-30B-A3B and 2 microbatches at 4096 tokens, at 11.9-22.7%. That wait came from the tracing: untraced, its compute alone took 94.47ms, against 88.79-89.53ms of kernels in the trace, about as far above its kernels as the other patterns' compute alone.
+
+#### Drawing the figures
+
+[comm-compute-overlap-plot.py](comm-compute-overlap-plot.py) draws the figures of [Exposed Communication by Parallelism Pattern](../exposed-communication.md), each run's step as a bar of its compute alone and its exposed communication. It doesn't read the benchmark's output: the numbers the benchmark printed for each run are typed into its `FIGURES` dictionary, so to redraw a figure after re-running a measurement, or to draw your own runs, edit the numbers there and run it again. It needs matplotlib.
 
 #### Sources and further reading
 
@@ -590,7 +594,7 @@ Further reading:
 
 ### all_gather_object vs all_reduce
 
-[all_gather_object_vs_all_reduce.py](all_gather_object_vs_all_reduce.py) - a quick benchmark showing 23x speed up when moving from `all_gather_object` to `all_reduce` when collecting completion status from the process group. e.g. when implementing some sort of all-processes-are-done flag. This technique is usually used for synchronizing gpus when they may complete at different number of iterations - which one needs for inference over multiple DP channels, or when one wants to sync a `StopIteration` event in `DataLoader`. See also [all_gather_object_vs_all_gather.py](./all_gather_object_vs_all_gather.py).
+[all_gather_object_vs_all_reduce.py](all_gather_object_vs_all_reduce.py) - a quick benchmark showing 23x speed up when moving from `all_gather_object` to `all_reduce` when collecting completion status from the process group. e.g. when implementing some sort of all-processes-are-done flag. This technique is usually used for synchronizing GPUs when they may complete at different number of iterations - which one needs for inference over multiple DP channels, or when one wants to sync a `StopIteration` event in `DataLoader`. See also [all_gather_object_vs_all_gather.py](./all_gather_object_vs_all_gather.py).
 
 ### all_reduce latency comparison
 

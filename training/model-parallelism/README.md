@@ -23,8 +23,8 @@ Two main approaches are used to enable training and inferring models that are bi
 The following is the brief description of the main concepts that will be described later in depth in this document.
 
 1. [Data Parallelism](#data-parallelism) (DP) - the same setup is replicated multiple times, and each being fed a slice of the data. The processing is done in parallel and all setups are synchronized at the end of each training step.
-2. [TensorParallelism](#tensor-parallelism) (TP) - each tensor is split up into multiple chunks, so instead of having the whole tensor reside on a single gpu, each shard of the tensor resides on its designated gpu. During forward and backward processing the shards execute concurrently and exchange partial activations or gradients at layer-specific boundaries, often using all-reduce, all-gather, or reduce-scatter rather than synchronizing only at the end of the step. This is what one may call horizontal parallelism, as the splitting happens on horizontal level. See the [PyTorch Tensor Parallel tutorial](https://docs.pytorch.org/tutorials/intermediate/TP_tutorial.html).
-3. [PipelineParallelism](#pipeline-parallelism) (PP) - the model is split up vertically (layer-level) across multiple GPUs, so that only one or several layers of the model are places on a single gpu. Each gpu processes in parallel different stages of the pipeline and working on a small chunk of the batch.
+2. [TensorParallelism](#tensor-parallelism) (TP) - each tensor is split up into multiple chunks, so instead of having the whole tensor reside on a single GPU, each shard of the tensor resides on its designated GPU. During forward and backward processing the shards execute concurrently and exchange partial activations or gradients at layer-specific boundaries, often using all-reduce, all-gather, or reduce-scatter rather than synchronizing only at the end of the step. This is what one may call horizontal parallelism, as the splitting happens on horizontal level. See the [PyTorch Tensor Parallel tutorial](https://docs.pytorch.org/tutorials/intermediate/TP_tutorial.html).
+3. [PipelineParallelism](#pipeline-parallelism) (PP) - the model is split up vertically (layer-level) across multiple GPUs, so that only one or several layers of the model are places on a single GPU. Each GPU processes in parallel different stages of the pipeline and working on a small chunk of the batch.
 4. [Zero Redundancy Optimizer](#zero-data-parallelism) (ZeRO) - Also performs sharding of the tensors somewhat similar to TP, except the whole tensor gets reconstructed in time for a forward or backward computation, therefore the model doesn't need to be modified. It also supports various offloading techniques to compensate for limited GPU memory. Sharded DDP is another name for the foundational ZeRO concept as used by various other implementations of ZeRO.
 5. [Sequence Parallelism](#sequence-parallelism) - training on long input sequences requires huge amounts of GPU memory. This technique splits the processing of a single sequence across multiple GPUs.
 6. [Expert Parallelism](#expert-parallelism) - Mixture-Of-Experts (MoE) can be partitioned so that each expert has a dedicated GPU (or several of them).
@@ -168,14 +168,14 @@ Please note that most likely it won't be as efficient as [Tensor Parallelism](#t
 
 #### ZeRO with multiple replicas
 
-By default ZeRO uses all GPUs to create a single model replica - that's the model is spread out across all gpus. Which leads to various limitations such as:
+By default ZeRO uses all GPUs to create a single model replica - that's the model is spread out across all GPUs. Which leads to various limitations such as:
 
 1. the global batch size is inflexible - it's always a function of `total_gpus*micro_batch_size` - which on large clusters could lead to a huge global batch size which might be detrimental for efficient convergence. Granted one could use a tiny micro batch size to keep the global batch size in check, but this leads to smaller matrices on each GPU which results in less efficient compute
 2. the much faster intra-node networking is not being benefited from since the slower inter-node network defines the overall speed of communications.
 
-[ZeRO++](https://arxiv.org/abs/2306.10209) solves the 2nd limitation by introducing Hierarchical Weight Partition for ZeRO (hpZ). In this approach instead of spreading whole model weights across all the gpus, each model replica is restricted to a single node. This increases the memory usage by the total number of nodes, but now the 2x `all_gather` calls to gather the sharded components are performed over a much faster intra-node connection. Only the `reduce_scatter` to aggregate and redistribute gradients is performed over the slower inter-node network.
+[ZeRO++](https://arxiv.org/abs/2306.10209) solves the 2nd limitation by introducing Hierarchical Weight Partition for ZeRO (hpZ). In this approach instead of spreading whole model weights across all the GPUs, each model replica is restricted to a single node. This increases the memory usage by the total number of nodes, but now the 2x `all_gather` calls to gather the sharded components are performed over a much faster intra-node connection. Only the `reduce_scatter` to aggregate and redistribute gradients is performed over the slower inter-node network.
 
-The first limitation doesn't exactly get fixed since the overall global batch size remains the same, but since each replica is more efficient and because the additional memory pressure is likely to limit the possible micro batch size on each gpu, this overall should improve the throughput of the system.
+The first limitation doesn't exactly get fixed since the overall global batch size remains the same, but since each replica is more efficient and because the additional memory pressure is likely to limit the possible micro batch size on each GPU, this overall should improve the throughput of the system.
 
 PyTorch FSDP has this feature implemented in [shardingStrategy.HYBRID_SHARD](https://docs.pytorch.org/docs/stable/fsdp.html)
 
@@ -241,7 +241,7 @@ To calculate the global batch size of the DP + PP setup we then do: `mbs*chunks*
 
 Let's go back to the diagram.
 
-With `chunks=1` you end up with the naive MP, which is very inefficient. With a very large `chunks` value you end up with tiny micro-batch sizes which could be not every efficient either. So one has to experiment to find the value that leads to the highest efficient utilization of the gpus.
+With `chunks=1` you end up with the naive MP, which is very inefficient. With a very large `chunks` value you end up with tiny micro-batch sizes which could be not every efficient either. So one has to experiment to find the value that leads to the highest efficient utilization of the GPUs.
 
 While the diagram shows that there is a bubble of "dead" time that can't be parallelized because the last `forward` stage has to wait for `backward` to complete the pipeline, the purpose of finding the best value for `chunks` is to enable a high concurrent GPU utilization across all participating GPUs which translates to minimizing the size of the bubble.
 
@@ -249,7 +249,7 @@ The choice of the schedule is critical to the efficient performance, with the mo
 
 - sequential [Gpipe: Efficient training of giant neural networks using pipeline parallelism](https://arxiv.org/abs/1811.06965)
 - interleaved 1F1B [Pipedream: Fast and efficient pipeline parallel dnn training](https://arxiv.org/abs/1806.03377)
-- looped, depth-first [Efficient large-scale language model training on gpu clusters using Megatron-LM](https://arxiv.org/abs/2104.04473)
+- looped, depth-first [Efficient large-scale language model training on GPU clusters using Megatron-LM](https://arxiv.org/abs/2104.04473)
 - breadth-first [Breadth-First Pipeline Parallelism](https://arxiv.org/abs/2211.05953)
 - Llama 3 training used a combination of depth and breadth first for best performance and also allowed them to progressively modify the global batch size as the training progressed, which is typically very difficult to accomplish with PP. See [The Llama 3 Herd of Models](https://arxiv.org/abs/2407.21783) section 3.3.2 Parallelism for Model Scaling.
 
@@ -427,7 +427,19 @@ Colossal-AI's SP implementation uses ring self-attention, a ring-like communicat
 
 Paper: [Reducing Activation Recomputation in Large Transformer Models](https://arxiv.org/abs/2205.05198)
 
-Megatron-LM's SP is tightly integrated with its TP. Megatron-LM partitions sequence along sequence dimensions and applies allgather and reduce scatter collective to aggregate QKV projections for attention computation. Its communication volume increases linearly with message size (M) regardless of number of compute devices.
+Megatron-LM's SP is tightly integrated with its TP. Unlike the other SPs in this section, it shards only the parts of a transformer layer that [TP](#tensor-parallelism) leaves replicated, and only over the TP group.
+
+Under TP, the activations inside the attention and MLP blocks are sharded, but every GPU of the group stores the full inputs of these blocks and runs the LayerNorms and the dropouts after the attention and MLP blocks on the whole sequence. These regions need little compute but a lot of activation memory, and they're independent along the sequence, so with a TP size of `t`, SP keeps and processes only `1/t` of the sequence in them on each GPU.
+
+SP replaces TP's all-reduces with the paper's `g` and `ḡ` operations, drawn in its Figure 5. In forward, `g` all-gathers the sequence-sharded LayerNorm output before each attention or MLP block's first matmul, and `ḡ` reduce-scatters the partial outputs of its last matmul back along the sequence. In backward, `g` reduce-scatters and `ḡ` all-gathers. A layer's 4 all-reduces in forward and backward become 4 all-gathers and 4 reduce-scatters, and as a ring all-reduce is a [reduce-scatter](../../network/comms.md#reduce-scatter) followed by an all-gather, these move the same data. As the [DeepSpeed-Ulysses](#deepspeed-ulysses-sp) paper points out, Megatron-LM SP's per-link communication volume grows linearly with message size `M` rather than falling as the TP group grows.
+
+To avoid storing the whole LayerNorm output for backward, each GPU keeps only its share of the sequence and all-gathers it again in backward. This extra all-gather is communication that TP alone doesn't do, and the paper overlaps it with the computation of the gradients with respect to that output to reduce its overhead.
+
+With sizes in bytes for 16-bit activations, the paper gives the activation memory per layer as `sbh(10 + 24/t + 5as/(ht))` with TP (its Equation 2) and `sbh(10/t + 24/t + 5as/(ht)) = (sbh/t)(34 + 5as/h)` with TP and SP (Equation 4), where `s` is the sequence length, `b` the micro-batch size, `h` the hidden size, `a` the number of attention heads and `t` the TP size. SP thus divides the replicated `10sbh` term by `t` as well, so all of a layer's activations are split `t` ways.
+
+Megatron-LM turns it on with `--sequence-parallel`, and turns it off, with a warning, when the TP size is 1.
+
+For one layer of its 22B model on 8 A100 GPUs, the paper measured forward and backward together at 19.0ms with SP and 19.6ms without. It attributes the gain to the LayerNorms and dropouts processing `1/t` of the data, partly offset by all-gather plus reduce-scatter running slower than all-reduce for the same data, and calls it secondary to the memory saving.
 
 See [Other parallelism patterns](../../network/exposed-communication.md#other-parallelism-patterns) for how much of the communication of Megatron-LM's TP with SP overlaps with the compute, and how much it slows a training step down, next to TP alone.
 
@@ -478,7 +490,7 @@ LoongTrain's 2D-Attention likewise splits the sequence-parallel GPUs into a head
 
 ## TP+SP
 
-TP can be combined with SP in the same process group to minimize communication costs as explained in [Reducing Activation Recomputation in Large Transformer Models](https://arxiv.org/abs/2205.05198). For example in LLMs, TP is used for embedding, attention and linear layers and when dropout and layer norm are reached SP is used instead.
+TP can be combined with SP in the same process group to cut the activation memory by the TP size, as explained in [Reducing Activation Recomputation in Large Transformer Models](https://arxiv.org/abs/2205.05198) and in [Megatron-LM's SP](#megatron-lms-sp). Within each transformer layer, TP shards the attention and MLP blocks, while SP shards the LayerNorm and dropout regions along the sequence dimension.
 
 
 
@@ -615,7 +627,7 @@ So the promise is very attractive - it runs a 30min simulation on the cluster of
 
 ## Parallelism network collectives
 
-As intra- and inter-node speeds have an order of magnitude difference, it's crucial to choose different parallelization techniques for intra- and inter-node crossing. e.g. TP should stay inside the fastest, lowest-latency domain because of its massive synchronization requirements - traditionally that means within the node, but on rack-scale systems like NVL72 that domain spans many nodes (called supernode), so the real rule is to keep TP inside the scale-up fabric and to cross into the slower scale-out network only when measurement says you can afford it or capacity leaves no choice. Moreover, some accelerators, like the recent AMD MI3\*\* series have a very slow gpu-to-gpu connectivity which again impacts how parallelism is done for the best performance.
+As intra- and inter-node speeds have an order of magnitude difference, it's crucial to choose different parallelization techniques for intra- and inter-node crossing. e.g. TP should stay inside the fastest, lowest-latency domain because of its massive synchronization requirements - traditionally that means within the node, but on rack-scale systems like NVL72 that domain spans many nodes (called supernode), so the real rule is to keep TP inside the scale-up fabric and to cross into the slower scale-out network only when measurement says you can afford it or capacity leaves no choice. Moreover, some accelerators, like the recent AMD MI3\*\* series have a very slow GPU-to-GPU connectivity which again impacts how parallelism is done for the best performance.
 
 Here is a useful tidbit: the all-reduce collective can be decomposed into two separate phases: reduce-scatter and all-gather.
 
@@ -768,7 +780,7 @@ Here is a very rough outline at which parallelism strategy to use when. The firs
 
     With very fast intra-node connectivity of NVLINK or NVSwitch all three should be mostly on par, without these PP will be faster than TP or ZeRO. The degree of TP may also make a difference. Best to experiment to find the winner on your particular setup.
 
-    TP is almost always used within a single node. That is TP size <= gpus per node.
+    TP is almost always used within a single node. That is TP size <= GPUs per node.
 
 * Largest Layer not fitting into a single GPU:
 

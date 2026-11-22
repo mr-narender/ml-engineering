@@ -94,7 +94,7 @@ On ROCm, `--search auto` prints a note that it was checked against an exhaustive
 **Intel dGPUs (A770, A750, B580, etc.)**
 - Follow Intel Extension for PyTorch [installation steps](https://pytorch-extension.intel.com/installation?platform=gpu)
 
-**Telemetry on NVIDIA, AMD and Gaudi:** the SM clock certifies that a MAMF iteration ran at boost, power ranks the scouted shapes, and both are printed next to each number; MSMF is judged on throughput alone. `mamf-finder.py` refuses to start if the telemetry package is missing (`nvidia-ml-py`, `amdsmi`, `habana-pyhlml` correspondingly) or can't read power/clock; `--telemetry off` runs anyway, with MAMF not boost-validated. The `amdsmi` reads are confirmed on MI300X and as of this writing the `pyhlml` reads are untested on hardware. On MI300X the card hits its 750 W cap within one BF16 kernel and bursts after an idle start *slower*, not faster, so on this particular gpu MAMF is less reliable than MSMF.
+**Telemetry on NVIDIA, AMD and Gaudi:** the SM clock certifies that a MAMF iteration ran at boost, power ranks the scouted shapes, and both are printed next to each number; MSMF is judged on throughput alone. `mamf-finder.py` refuses to start if the telemetry package is missing (`nvidia-ml-py`, `amdsmi`, `habana-pyhlml` correspondingly) or can't read power/clock; `--telemetry off` runs anyway, with MAMF not boost-validated. The `amdsmi` reads are confirmed on MI300X and as of this writing the `pyhlml` reads are untested on hardware. On MI300X the card hits its 750 W cap within one BF16 kernel and bursts after an idle start *slower*, not faster, so on this particular GPU MAMF is less reliable than MSMF.
 
 ### Examples of usage
 
@@ -390,7 +390,7 @@ Here is how the straggler in the report above was found on a 4 8x B200 node job,
 
    The 31 healthy GPUs took ~379-390ms (median ~385ms) and GPU 3 of the slow node took ~404ms - 5.1% above the median and 3.6% above the next slowest GPU. That gap is larger than the whole 2.9% spread of the other 31.
 
-4. Confirm it in a profiler trace of the multi-GPU job. In the [Nsight Systems](https://developer.nvidia.com/nsight-systems) (`nsys`) trace of the slow node, GPU 3 ran the very same kernels longer than the node's other 7 GPUs: the matmuls by 3.5-9%, flash attention by 4.2%, the reductions by 4.7% and the copies by 3.1%. The slowdown is spread over compute-bound and memory-bound kernels alike, which points at the GPU rather than at any one kernel, while its device-to-device memcpys, limited by the HBM bandwidth, ran within 2% of the other GPUs' - so the SMs were slow, not the memory.
+4. Confirm it in a profiler trace of the multi-GPU job. In the [Nsight Systems](../../../debug/pytorch.md#nvidia-nsight-systems) (`nsys`) trace of the slow node, GPU 3 ran the very same kernels longer than the node's other 7 GPUs: the matmuls by 3.5-9%, flash attention by 4.2%, the reductions by 4.7% and the copies by 3.1%. The slowdown is spread over compute-bound and memory-bound kernels alike, which points at the GPU rather than at any one kernel, while its device-to-device memcpys, limited by the HBM bandwidth, ran within 2% of the other GPUs' - so the SMs were slow, not the memory.
 
 Running everything at once matters for two reasons. The GPUs share the node's power, cooling and PCIe switches, and a GPU that is fast when it runs alone can be slow when its neighbors are busy - which is how it is used in training. And measuring 32 GPUs one after another takes 32 times longer while the conditions drift between the runs.
 
