@@ -88,7 +88,7 @@ So the `3*2` is often called "model FLOPs" and `4*2` - "hardware FLOPs", correla
 ```bash
 perl -le '$ng=64; $ms=52; $gbs=1024; $sp=127; $seqlen=2048; print $ms*4*2*$seqlen*$gbs / ( $sp * $ng * 1e3)'
 ```
-(ng = total gpus, ms = model size in B, gbs = global batch size, sp = seconds per iteration)
+(ng = total GPUs, ms = model size in B, gbs = global batch size, sp = seconds per iteration)
 
 Here is the same formula using `bash` env vars and which breaks down GBS into `MBS*DP*GAS` (GAS in this case corresponded to `pp_chunks` which was the number of chunks in the pipeline, but normally GAS just stands for Gradient Accumulation Steps):
 ```bash
@@ -466,11 +466,11 @@ Environment variable `PYTORCH_ALLOC_CONF` comes to help and allows you to replac
 
 First, there are usually two batch sizes:
 
-1. micro batch size (MBS), also known as batch size per gpu - this is how many samples a single gpu consumes during a model's single `forward` call.
+1. micro batch size (MBS), also known as batch size per GPU - this is how many samples a single GPU consumes during a model's single `forward` call.
 
 2. global batch size (GBS) - this is the total amount of samples consumed between two optimizer steps across all participating GPUs.
 
-Model replica is how many gpus are needed to fit the full model.
+Model replica is how many GPUs are needed to fit the full model.
 
 - If the model fits into a single GPU a model replica takes 1 GPU. Usually then one can use multiple GPUs to perform  [Data Parallelism](../../training/model-parallelism/README.md#data-parallelism)
 - If the model doesn't fit into a single GPU, it'd usually require some sort of sharding technique - it can be
@@ -486,13 +486,13 @@ Going back to our global batch size (GBS) it's calculated as:
 GBS = MBS*DP
 ```
 
-So if you have 8 gpus (N_GPUS=8) and your MBS=4 and you do DP you end up with having GBS=32 because:
+So if you have 8 GPUs (N_GPUS=8) and your MBS=4 and you do DP you end up with having GBS=32 because:
 
 ```
 GBS = MBS*DP = 4*8 = 32
 ```
 
-If you use TP with a degree of 2 (TP=2) and PP with a degree of 2 (PP=2) this means each model replica takes 4 gpus (`TP*PP`), and thus with N_GPUS=8
+If you use TP with a degree of 2 (TP=2) and PP with a degree of 2 (PP=2) this means each model replica takes 4 GPUs (`TP*PP`), and thus with N_GPUS=8
 
 ```
 DP = N_GPUS/(TP*PP) = 8 / (2*2) = 2
@@ -550,11 +550,32 @@ This methodology is only relevant for training, and not during inference.
 
 Enabling gradient checkpointing allows one to trade training throughput for accelerator memory. When this feature is activated instead of remembering the outputs of, say, transformer blocks until the `backward` pass is done, these outputs are dropped. This frees up huge amounts of accelerator memory. But, of course, a `backward` pass is not possible without having the outputs of `forward` pass, and thus they have to be recalculated.
 
-This, of course, can vary from model to model, but typically one pays with about 20-25% decrease in throughput, but since a huge amount of gpu memory is liberated, one can now increase the batch size per gpu and thus overall improve the effective throughput of the system. In some cases this allows you to double or quadruple the batch size if you were already able to do a small batch size w/o OOM. (Recent papers report as high as 30-40% additional overhead.)
+This, of course, can vary from model to model, but typically one pays with about 20-25% decrease in throughput, but since a huge amount of GPU memory is liberated, one can now increase the batch size per GPU and thus overall improve the effective throughput of the system. In some cases this allows you to double or quadruple the batch size if you were already able to do a small batch size w/o OOM. (Recent papers report as high as 30-40% additional overhead.)
 
 For example, in HF Transformers models you do `model.gradient_checkpointing_enable()` to activate it in your custom Trainer or if you use the HF Trainer then you'd activate it with `--gradient_checkpointing 1`.
 
 Also  check out this the paper: [Reducing Activation Recomputation in Large Transformer Models](https://arxiv.org/abs/2205.05198) which describes a way to avoid most activation recomputations and thus save both memory and compute.
+
+#### Offloading the activation checkpoints to CPU memory
+
+Gradient checkpointing still keeps one tensor per checkpointed layer on the accelerator - the layer's input, from which its `forward` is recomputed. That is `layers x sequence x hidden` elements, which at long sequence lengths becomes the largest part of the activation memory: Qwen3-8B (36 layers, hidden size 4096) at 128K tokens in bf16 keeps `36 x 131072 x 4096 x 2` bytes = 36GiB of them.
+
+Since `transformers==5.17` these tensors can be moved to pinned CPU memory during `forward` and brought back for `backward`:
+
+```python
+args = TrainingArguments(
+    gradient_checkpointing=True,
+    gradient_checkpointing_kwargs={"offload": True},
+)
+```
+
+It wraps the model's checkpoint function in PyTorch's [`save_on_cpu(pin_memory=True)`](https://docs.pytorch.org/docs/stable/autograd.html#torch.autograd.graph.save_on_cpu), so any model that supports gradient checkpointing supports it. The memory profile in [PyTorch memory profiler](../../debug/pytorch.md#pytorch-memory-profiler) shows what it does: with the activation checkpoints offloaded, accelerator memory stays flat through `forward` instead of climbing with each layer, so adding layers no longer adds to it.
+
+Offloading lowers the peak memory usage only if the activation checkpoints are among the tensors held at that peak. If the peak occurs in `backward`, where gradients dominate, the peak barely moves: Qwen3-1.7B at 32K tokens frees 3.5GiB after `forward`, yet its peak drops only from 11.13GB to 10.16GB.
+
+There are two costs. The offloaded tensors now sit in CPU memory, which adds up over a node: Llama-70B at a 3M-token sequence split over 32 accelerators with [Arctic Long Sequence Training](../model-parallelism/README.md#arctic-long-sequence-training) needs 915GiB of CPU memory per node for the offloaded activation checkpoints alone. And the copies run on the same CUDA stream as the compute, with no prefetch ahead of `backward`, so each step gets slower.
+
+footnote: as of 2026-10 this is an inefficient implementation: both copies run on the compute stream, and nothing is prefetched ahead of `backward`. The [`ActivationOffloadManager`](https://github.com/Snowflake-AI-Research/Arctic-Platform/blob/4f50c5bbea3f1ba102daba675bd480796c6dfea5/arctic_platform/model/implementations/gpu/activation_offload.py#L175) of [Arctic Platform](https://github.com/Snowflake-AI-Research/Arctic-Platform) has close to 0 overhead, because it copies on CUDA streams separate from the compute stream, so the copies overlap with compute, and it prefetches each layer's activation checkpoint ahead of its `backward`.
 
 ### Memory-efficient optimizers
 
@@ -579,6 +600,10 @@ For speed comparisons see [this benchmark](https://github.com/huggingface/transf
 ### `forward` vs `backward` Execution Speed
 
 For convolutions and linear layers there are 2x flops in the backward compared to the forward, which generally translates into ~2x slower (sometimes more, because sizes in the backward tend to be more awkward). Activations are usually bandwidth-limited, and it’s typical for an activation to have to read more data in the backward than in the forward (e.g. activation forward reads once, writes once, activation backward reads twice, `gradOutput` and output of the forward, and writes once, `gradInput`).
+
+### Input data affects measured speed
+
+Measured step time depends on the *values* in the tensors, not only on their shapes. High-entropy inputs flip more transistors per cycle, draw more power, and can pull the boost clock down under the same power / thermal envelope that low-entropy or all-zero inputs leave alone - so an identical kernel may complete its compute at different times than on low-entropy or all-zero inputs of the same shape. For a training or inference bench this means: seed the RNG that builds the inputs (`torch.manual_seed(...)`), and feed a realistic distribution rather than zeros. The effect is small when the distribution is held fixed, but it is not zero. Full write-up, including the power and denormal mechanisms and the citations, under [Input data affects measured performance](../../compute/accelerator/benchmarks/README.md#input-data-affects-measured-performance). This is about *timing* conditions; for *numerical* determinism see [Reproducibility](../reproducibility/README.md).
 
 
 ## Vector and matrix size divisibility
@@ -661,8 +686,8 @@ A published peak is an **aggregate over the whole part**, never a per-SM rate: B
 | :---- | --------: | ------------: | ---------: |
 | bf16  |      2250 |         15.20 |       2311 |
 | fp8   |      4500 |         30.41 |       4622 |
-| fp4   |     12600 |         85.14 |      12941 |
-| nvfp4 |     15000 |        101.35 |      15405 |
+| mxfp4 |     13500 |         91.22 |      13865 |
+| nvfp4 |     13500 |         91.22 |      13865 |
 
 Every dtype moves by that same 1.027x, which leaves a corollary: **NVIDIA publishes one set of numbers for `B300 SXM`, and two real SKUs cannot both match them.** If 2250 belongs to the 148-SM part then the 152-SM part is entitled to 2311; if it belongs to the 152-SM part then the 148-SM one reaches only 2191. So a peak quoted without its SM count is approximate for at least one of the parts sold under that name. Note the asymmetry: that 2.7% gap in *published* peak is exact, while the gap in *achievable* throughput is the staircase above - nothing, 2x, or 2.7% depending entirely on shape.
 
@@ -776,7 +801,7 @@ GPU5    NV18    NV18    NV18    NV18    NV18     X      NV18    NV18    52-103,1
 GPU6    NV18    NV18    NV18    NV18    NV18    NV18     X      NV18    52-103,156-207  1
 GPU7    NV18    NV18    NV18    NV18    NV18    NV18    NV18     X      52-103,156-207  1
 ```
-On this 8-gpu node you can see the `CPU Affinity` column which tells you which cores reside together with the first and the second group of GPUs, and the `NUMA Affinity` column.
+On this 8-GPU node you can see the `CPU Affinity` column which tells you which cores reside together with the first and the second group of GPUs, and the `NUMA Affinity` column.
 
 Now that it's clear that the various compute components are placed in 2 or more groups, to achieve the best performance we need to ensure that the components communicate within the group they belong to, and avoid any cross-talk. For example, if gpu0 belong to NUMA node 0, then the process that drives this GPU should only use cpu-cores from NUMA node 0.
 
@@ -851,7 +876,7 @@ So now we just need to figure out how to programmatically get the right cpu sets
 
 #### pynvml
 
-If you're using NVIDIA GPUs, `pynvml` (`pip install nvidia-ml-py` - the module is still imported as `pynvml`) can be very helpful to get all sorts of information about the gpu and not needing to call `nvidia-smi` - in this situation we are going to use it to tell us the correct CPU affinity given a GPU index.
+If you're using NVIDIA GPUs, `pynvml` (`pip install nvidia-ml-py` - the module is still imported as `pynvml`) can be very helpful to get all sorts of information about the GPU and not needing to call `nvidia-smi` - in this situation we are going to use it to tell us the correct CPU affinity given a GPU index.
 
 In [numa-set-pynvml.py](benchmarks/numa/numa-set-pynvml.py) you will find a working helper function that you could call at the very top of your training loop like so:
 ```python
@@ -861,7 +886,7 @@ set_numa_affinity(gpu_index, verbose=True)
 ```
 call it before `DataLoader` is initialized to get the workers use the right cpu-cores!
 
-Normally, the local process rank equals the gpu index, but if one uses `CUDA_VISIBLE_DEVICES` - this might not be true any longer - if you use it, you will need to remap the process rank to the actual index:
+Normally, the local process rank equals the GPU index, but if one uses `CUDA_VISIBLE_DEVICES` - this might not be true any longer - if you use it, you will need to remap the process rank to the actual index:
 
 ```python
 gpu_index = int(os.environ.get("LOCAL_RANK", 0))

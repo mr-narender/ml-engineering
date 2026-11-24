@@ -19,7 +19,7 @@ Theoretical peak TFLOPS is [a ceiling nobody hits in practice](../../training/pe
 
 ## MAMF: the realistic ceiling, not the marketing number
 
-**MAMF (Maximum Achievable Matmul FLOPS)** is the actual best-case `matmul` throughput measured on real hardware/software (perfectly-aligned max-size shapes, no sparsity) — as opposed to the theoretical peak that's physically unreachable. Use it to sanity-check whether your own training TFLOPS have room left to optimize, or whether you're already near the ceiling (measure MAMF on your own GPUs with [`mamf-finder.py`](../../compute/accelerator/benchmarks/mamf-finder.py)). Source and full comparison across multiple vendors: [MAMF comparison table](../../compute/accelerator/README.md#maximum-achievable-matmul-flops-comparison-table).
+**MAMF (Maximum Achievable Matmul FLOPS)** is the actual best-case `matmul` throughput measured on real hardware/software (perfectly-aligned max-size shapes, no sparsity) — as opposed to the theoretical peak that's physically unreachable. Use it to sanity-check whether your own training TFLOPS have room left to optimize, or whether you're already near the ceiling (measure MAMF on your own GPUs with [`mamf-finder.py`](../../compute/accelerator/benchmarks/mamf-finder.py)). Source and full comparison across multiple vendors: [MAMF comparison table](../../compute/accelerator/README.md#maximum-achievable-and-sustainable-matmul-flops-comparison-table).
 
 **BF16:**
 
@@ -35,7 +35,7 @@ Theoretical peak TFLOPS is [a ceiling nobody hits in practice](../../training/pe
 | H200 SXM    |        1453.4 |        1979 |      73.4% |
 | B200 SXM    |        3432.5 |        4500 |      76.3% |
 
-Takeaway: the *achievable* bf16 ratio (1745/794.5 = **2.20×**) tracks the theoretical 2.28× closely because efficiency is similar on both chips (80.3% vs 77.6%). In fp8 the achievable ratio is actually *higher* than theoretical (3432.5/1453.4 = **2.36×**) because B200's fp8 path is relatively more mature (76.3%) than H200's (73.4%). Either way, **2.2–2.4× is the realistic matmul-only ceiling** for this upgrade — real training throughput will land below that once attention scaling, dense-GEMM maturity, and communication overhead are factored in (the [worked example below](#worked-example-meta-llamallama-31-8b-training-step-fa3-vs-fa4) shows exactly how much below, and why).
+Takeaway: the *achievable* bf16 ratio (1745/794.5 = **2.20×**) tracks the theoretical 2.28× closely because efficiency is similar on both chips (80.3% vs 77.6%). In fp8 the achievable ratio is actually *higher* than theoretical (~3433/~1453 = **2.36×**) because B200's fp8 path is relatively more mature (76.3%) than H200's (73.4%). Either way, **2.2–2.4× is the realistic matmul-only ceiling** for this upgrade — real training throughput will land below that once attention scaling, dense-GEMM maturity, and communication overhead are factored in (the [worked example below](#worked-example-meta-llamallama-31-8b-training-step-fa3-vs-fa4) shows exactly how much below, and why).
 
 ## Decision framework, part 1 — do you need a new dtype?
 
@@ -51,7 +51,7 @@ Treat "does my stack support this feature?" as a hard gate on any feature-motiva
 
 Everything else a new GPU brings — more memory, more bandwidth, faster interconnect, more raw FLOPS — is a *bigger quantity of what you already have*, not a brand-new capability, so it doesn't settle the decision by itself; it comes down to measurement. That's [part 2](#decision-framework-part-2--is-it-worth-it-on-performance).
 
-[^unlocks]: Dtype peak TFLOPS (theoretical), H200 → B200: bf16 989→2250, fp8 1979→4500, plus formats Hopper can't execute at all — fp6 →4500, fp4 →9000, nvfp4 →10000. FP4 roughly doubles fp8 throughput and halves the memory/bandwidth of the quantized tensors. What makes 4-bit actually *usable* is Blackwell's **2nd-gen Transformer Engine with microscaling**: FP4 has only ~16 representable values, so one scale factor per tensor can't span its dynamic range (small values flush to zero, large ones saturate). Microscaling (MX / NVFP4) instead uses a separate scale per small block (e.g. per 16–32 values), applied by the tensor cores in hardware at no throughput cost — so you keep accuracy near fp8/bf16 at FP4's ~2× speed and half memory, which naive per-tensor FP4 can't. (Hopper's 1st-gen TE did this for fp8 via per-tensor scales; Blackwell's 2nd-gen extends it to block-scaled fp4/fp6.)
+[^unlocks]: Dtype peak TFLOPS (theoretical), H200 → B200: bf16 989→2250, fp8 1979→4500, plus formats Hopper can't execute at all — fp6 →4500, mxfp4 and nvfp4 →9000. FP4 roughly doubles fp8 throughput and halves the memory/bandwidth of the quantized tensors. What makes 4-bit actually *usable* is Blackwell's **2nd-gen Transformer Engine with microscaling**: FP4 has only ~16 representable values, so one scale factor per tensor can't span its dynamic range (small values flush to zero, large ones saturate). Microscaling (MX / NVFP4) instead uses a separate scale per small block (e.g. per 16–32 values), applied by the tensor cores in hardware at no throughput cost — so you keep accuracy near fp8/bf16 at FP4's ~2× speed and half memory, which naive per-tensor FP4 can't. (Hopper's 1st-gen TE did this for fp8 via per-tensor scales; Blackwell's 2nd-gen extends it to block-scaled fp4/fp6.)
 
 ## Decision framework, part 2 — is it worth it on performance?
 
@@ -127,7 +127,7 @@ Max on H200's ~130GiB usable budget is **256k tokens at ~125GiB**, confirmed on 
    | **cu129**             | 113.8        | –      | –      | 140.4     |
    | **cu130**             | 117.8        | 120.5  | 140.1  | **140.2** |
 
-   Full-range torch 2.10.0 → 2.13.0 on the H200 is **+19% at fixed cu130** (117.8 → 140.2TFLOPS), and almost all of that gain lands in one place — the torch 2.11.0 → 2.12.0 jump alone is **+16%** (120.5 → 140.1). CUDA, meanwhile, contributes at most ~3.5% (113.8 → 117.8 at torch 2.10.0) and essentially nothing by torch 2.13.0 (140.4 vs 140.2). So the original 2.10.0/cu129 → 2.13.0/cu130 comparison that kicked off this investigation (113.8 → 140.4, **+23.4%**) was almost entirely a **PyTorch-version artifact, not hardware, and not even CUDA**. All results in this doc use the identical stack (torch 2.13.0/cu130, deepspeed 0.19.2) on both boxes. **If you skip this check, you will systematically overstate whichever GPU happens to be benchmarked on the newer PyTorch version.**
+   Full-range torch 2.10.0 → 2.13.0 on the H200 is **+19% at fixed cu130** (~118 → ~140TFLOPS), and almost all of that gain lands in one place — the torch 2.11.0 → 2.12.0 jump alone is **+16%** (~121 → ~140). CUDA, meanwhile, contributes at most ~3.5% (~114 → ~118 at torch 2.10.0) and essentially nothing by torch 2.13.0 (~140 either way). So the original 2.10.0/cu129 → 2.13.0/cu130 comparison that kicked off this investigation (~114 → ~140, **+23.4%**) was almost entirely a **PyTorch-version artifact, not hardware, and not even CUDA**. All results in this doc use the identical stack (torch 2.13.0/cu130, deepspeed 0.19.2) on both boxes. **If you skip this check, you will systematically overstate whichever GPU happens to be benchmarked on the newer PyTorch version.**
 
 ### Is B200 worth ~2× the H200 cost?
 
@@ -215,19 +215,19 @@ If you use [FSDP](../../training/model-parallelism/README.md) for scaling — it
 
 Everything above compared two *generations* (Hopper → Blackwell). A within-generation refresh — e.g. B200 → **B300** ("Blackwell Ultra") — is a different, usually smaller, decision. The same two-part decision framework applies — [part 1 (do you need a new dtype?)](#decision-framework-part-1--do-you-need-a-new-dtype) and [part 2 (is it worth it on performance?)](#decision-framework-part-2--is-it-worth-it-on-performance) — but the answers shift in predictable ways.
 
-| spec                             |     B200 SXM |      B300 SXM |     ratio |
-| -------------------------------- | -----------: | ------------: | --------: |
-| bf16 / fp8 TFLOPS (theoretical)  |  2250 / 4500 |   2250 / 4500 |      1.0× |
-| fp4 / nvfp4 TFLOPS (theoretical) | 9000 / 10000 | 12600 / 15000 | ~1.4–1.5× |
-| bf16 MAMF (achievable)           |         1745 |          1769 |    ~1.01× |
-| HBM (usable)                     |      ~180GiB |       ~288GiB |  **1.6×** |
-| HBM bandwidth                    |      8.0TBps |       8.0TBps |      1.0× |
-| TDP                              |        1000W |         1300W |      1.3× |
+| spec                               | B200 SXM    | B300 SXM      | ratio    |
+| ---------------------------------- | ----------: | ------------: | -------: |
+| bf16 / fp8 TFLOPS (theoretical)    | 2250 / 4500 |   2250 / 4500 |     1.0× |
+| mxfp4 / nvfp4 TFLOPS (theoretical) | 9000 / 9000 | 13500 / 13500 |     1.5× |
+| bf16 MAMF (achievable)             |        1745 |          1769 |   ~1.01× |
+| HBM (usable)                       |     ~180GiB |       ~288GiB | **1.6×** |
+| HBM bandwidth                      |     8.0TBps |       8.0TBps |     1.0× |
+| TDP                                |       1000W |         1300W |     1.3× |
 
 What this means for the should-you-upgrade framework:
 
 - **[Part 1](#decision-framework-part-1--do-you-need-a-new-dtype) (do you need a new dtype?) rarely fires.** B300 introduces no dtype B200 lacks. The one thing that *can* act like a part-1 gap is **memory**: 288 vs 180GiB (1.6×) is a big jump, so a model/config that can't be made to fit a B200 node even with parallelism may fit a B300 node outright.
-- **[Part 2](#decision-framework-part-2--is-it-worth-it-on-performance) (is it worth it on performance?): the only real compute uplift is fp4 (~1.4–1.5×)** — bf16/fp8 are unchanged, so B300 mainly pays off for low-precision inference/training and for the extra memory.
+- **[Part 2](#decision-framework-part-2--is-it-worth-it-on-performance) (is it worth it on performance?): the only real compute uplift is fp4 (1.5×)** — bf16/fp8 are unchanged, so B300 mainly pays off for low-precision inference/training and for the extra memory.
 - **Software-maturity risk is low.** Same architecture family (`sm_100`), same FA4/kernel stack — none of the "switching too early" cost from the cross-generation case.
 
 ## Reproduce this benchmark

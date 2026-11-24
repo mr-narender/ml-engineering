@@ -14,7 +14,7 @@ Often you don't need to be a network engineer to figure out networking issues. S
 - RDMA: Remote Direct Memory Access
 
 
-## How to diagnose NCCL multi-gpu and multi-node connectivity issues
+## How to diagnose NCCL multi-GPU and multi-node connectivity issues
 
 See also [Debugging multi-node training](../../debug/pytorch.md#debugging-multi-node-training) for debugging multi-node issues at the PyTorch level.
 
@@ -72,6 +72,10 @@ CA 'mlx5_5'
 CA 'mlx5_6'
 CA 'mlx5_7'
 ```
+
+Which of these commands answer at all depends on the fabric, so it helps to know what each one asks. `ibstat`, along with `ibnetdiscover`, `iblinkinfo`, `ibhosts`, `ibswitches` and `perfquery`, queries the subnet manager - the fabric-wide service that hands out addresses and answers topology questions on InfiniBand. Those report only on a real InfiniBand fabric, which is what the sample above is. `ibv_devices`, `ibv_devinfo` and `ibstatus` ask the local adapter instead, so they answer on any fabric the RDMA stack enumerates, as does reading the port directly with `cat /sys/class/infiniband/*/ports/1/rate`.
+
+So identify the fabric first, using a command from the second group. On InfiniBand the port's `link_layer` is `InfiniBand` and the subnet-manager tools work. On RoCE, which carries RDMA over Ethernet, `link_layer` is `Ethernet`. On EFA there is no subnet manager: `ibv_devinfo` reports `transport: unspecified` with `link_layer: Unspecified`, `ibstatus` reports each port `ACTIVE` at its rate, and the subnet-manager tools fail - `ibnetdiscover` with `Can't open SMI UMAD port`, while `ibstat -l` prints nothing at all. That silent empty output is the trap, since it reads as "this node has no RDMA devices"; on a 2026-09 AWS node measured for this chapter it printed nothing while the node had 16 adapters, each `ACTIVE` at `200 Gb/sec (4X HDR)`.
 
 Since besides the fast inter-node connectivity NICs, you're also likely to have a slow management Ethernet NIC (or even several of those), that is there to be able to configure the node, use a shared file system, access the Internet, it's almost certain that `ifconfig` will also include additional NICs. Also you are likely to have a docker network interface, `lo` loopback and some others. For example on my desktop I may get the following output:
 
@@ -155,7 +159,7 @@ or alternatively you could list explicitly the interfaces you want, e.g.:
 export NCCL_IB_HCA==mlx5_0,mlx5_1,mlx5_2,mlx5_3,mlx5_4,mlx5_5,mlx5_6,mlx5_7
 ```
 
-As mentioned earlier using `ibstat` on one of the nodes interconnected with IB will show you the available IB interfaces.
+As mentioned earlier, `ibstat` on one of the nodes will list the available interfaces if the fabric is InfiniBand; on any other RDMA fabric use `ibv_devices` or `ibv_devinfo`.
 
 Since NCCL tries to automatically choose the best network interfaces, you only need to do the above if NCCL doesn't work or it's slow. In normal circumstances NCCL should work out of the box, without the user needing to do anything special.
 
@@ -345,7 +349,7 @@ export NCCL_IB_HCA==mlx5_0:1,mlx5_1:1  # exactly port 1 of mlx5_0 and of mlx5_1
 export NCCL_IB_HCA=^=mlx5_1,mlx5_4     # everything except mlx5_1 and mlx5_4
 ```
 
-A worked example of using the exclusion form to route around a single problem adapter is in [How to diagnose NCCL multi-gpu and multi-node connectivity issues](#how-to-diagnose-nccl-multi-gpu-and-multi-node-connectivity-issues). The full doc is [here](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-hca).
+A worked example of using the exclusion form to route around a single problem adapter is in [How to diagnose NCCL multi-GPU and multi-node connectivity issues](#how-to-diagnose-nccl-multi-gpu-and-multi-node-connectivity-issues). The full doc is [here](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-hca).
 
 
 ### `NCCL_P2P_DISABLE`

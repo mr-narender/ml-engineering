@@ -6,7 +6,7 @@ The intention of this chapter is not to show code examples and explain APIs for 
 
 Point-to-point communications are the simplest type of communication where there is always a single sender and a single receiver.
 
-For example, [Pipeline Parallelism](../training/model-parallelism/README.md#pipeline-parallelism) performs a point-to-point communication where the activations from the current vertical stage is sent to the next stage. So the current gpu performs `send` and the gpu holding the next stage performs `recv`.
+For example, [Pipeline Parallelism](../training/model-parallelism/README.md#pipeline-parallelism) performs a point-to-point communication where the activations from the current vertical stage is sent to the next stage. So the current GPU performs `send` and the GPU holding the next stage performs `recv`.
 
 PyTorch has `send` and `recv` for blocking, `isend` and `irecv` for non-blocking p2p comms. [more](https://docs.pytorch.org/tutorials/intermediate/dist_tuto.html#id1).
 
@@ -202,12 +202,12 @@ A ring passes the message from neighbor to neighbor, so the number of steps grow
 
 A single binary tree would waste half the machines: half the nodes are leaves, and a leaf only ever receives, so its outbound bandwidth never contributes. NCCL therefore builds a *double binary tree* - two trees over the same GPUs, arranged so no node is an interior node in both and at most one is a leaf in both. Both carry traffic simultaneously, which recovers the full bandwidth. The second tree is the first mirrored when the node count is even, or shifted by one position when it is odd.
 
-For how NCCL picks between ring and tree, and how to see or override the choice, see [`NCCL_ALGO`](benchmarks/README.md#nccl_algo).
+For how NCCL picks between ring and tree, and how to see or override the choice, see [`NCCL_ALGO`](README.md#nccl_algo).
 
 
 ## Protocols
 
-The algorithm decides who sends what to whom. Orthogonal to it, the protocol decides how each of those transfers is synchronized, and it swings performance as much as the algorithm does. NCCL has three of them - this is the `proto` half of the `Algo NVLS proto SIMPLE` lines that [`NCCL_ALGO`](benchmarks/README.md#nccl_algo) shows you.
+The algorithm decides who sends what to whom. Orthogonal to it, the protocol decides how each of those transfers is synchronized, and it swings performance as much as the algorithm does. NCCL has three of them - this is the `proto` half of the `Algo NVLS proto SIMPLE` lines that [`NCCL_ALGO`](README.md#nccl_algo) shows you.
 
 Columns are ordered by ascending per-hop latency, which happens to be ascending bandwidth utilization too:
 
