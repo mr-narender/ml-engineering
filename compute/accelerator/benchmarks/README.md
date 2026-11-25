@@ -258,8 +258,15 @@ A straggler is a GPU that works correctly but slower than its peers. It throws n
 
 [gpu-straggler-finder.py](gpu-straggler-finder.py) finds them in one run. It runs the same training step, by default a Llama-3.1-8B one - its 32 decoder layers, forward and backward, on one 8192-token sequence - on every GPU at once, with no communication between them, then a matmul and two memory-bandwidth workloads, compares each GPU with its node's median GPU and each node with the median node in the same 2-second windows, and flags every GPU that is slower than its peers, or than itself the rest of the time, in its slowest stretches of any of them, with the UUID, serial and PCI bus id to report it by. [How one straggler was found](#how-one-straggler-was-found) walks through the case it was written for: a B200 GPU that neither `mamf-finder.py` nor DCGM flagged, yet it made the compute part of every step of a 32-GPU job 3-4% slower. It is one of the compute passes of [How to evaluate the cluster](../../../insights/how-to-choose-cloud-provider.md#how-to-evaluate-the-cluster), which runs it on every GPU of every node of a trial allocation.
 
+To check the GPUs of one node:
+
 ```bash
-python gpu-straggler-finder.py  # all the GPUs of one node
+python gpu-straggler-finder.py
+```
+
+To check several nodes, run this on every node at once, here for 4 nodes of 8 GPUs, with `$MASTER_ADDR` set to the same node's address on every node:
+
+```bash
 torchrun --nnodes 4 --nproc_per_node 8 --rdzv_backend c10d \
     --rdzv_endpoint $MASTER_ADDR:29500 gpu-straggler-finder.py
 ```
@@ -281,10 +288,11 @@ gathering the results ...
 gathering the results: done in 0.4s
 
 32 GPUs (NVIDIA B200), 4 node(s)
-step: 32x decoder layer h=4096 ffn=14336 heads=32/8, 1x8192 tokens, bf16, forward+backward, 100ms idle after each step - median 404.85ms, fastest 399.34ms, slowest 411.96ms, spread 3.2%, median absolute deviation 2.22ms
-matmul: 8192x8192x8192 bf16 back to back for 30s - median 1315 TFLOPS, slowest 1264, fastest 1343, spread 6.2%
-copy: a 1024MiB cudaMemcpy within each GPU's memory for 30s - median 6444 GB/s read+written, slowest 6398, fastest 6494, spread 1.5%
-stream: c = a + b on 1024MiB buffers, on the SMs, for 30s - median 6966 GB/s read+written, slowest 6920, fastest 7006, spread 1.2%
+- step: 32x decoder layer h=4096 ffn=14336 heads=32/8, 1x8192 tokens, bf16, forward+backward, 100ms idle after each step - median 404.85ms, fastest 399.34ms, slowest 411.96ms, spread 3.2%, median absolute deviation 2.22ms
+- matmul: 8192x8192x8192 bf16 back to back for 30s - median 1315 TFLOPS, slowest 1264, fastest 1343, spread 6.2%
+- copy: a 1024MiB cudaMemcpy within each GPU's memory for 30s - median 6444 GB/s read+written, slowest 6398, fastest 6494, spread 1.5%
+- stream: c = a + b on 1024MiB buffers, on the SMs, for 30s - median 6966 GB/s read+written, slowest 6920, fastest 7006, spread 1.2%
+
 each node's median GPU vs the median node's in the same 2s window, + is slower: the median window / the 90th percentile window
 
 node                   step        matmul          copy        stream
@@ -310,12 +318,17 @@ cluster-a-2      5    400.18   -0.8/ -0.2%   -0.4/ -0.1%   -0.4/ -0.4%   -0.4/ -
 cluster-a-0      5    399.34   -1.3/ -1.0%   -1.1/ -0.4%   -0.9/ -0.8%   -0.5/ -0.5%      1620        1177      890     58          100%
 ... and 20 more GPUs, step -0.7 to +1.0% in their 90th percentile windows (--unflagged-rows -1 prints them)
 
+*****************************
+*  Stragglers Found: 1 GPU  *
+*****************************
+
 1 straggler(s) - report them by UUID and serial, which don't change with the node name or the GPU's index:
-  cluster-a-3 GPU 3: unsteady in step: its 90th percentile window 2.3% slower than its median one (z 17.6) - uuid GPU-00000000-1111-2222-3333-444444444444, serial 1650000000001, pci 00000000:63:00.0
+  * cluster-a-3 GPU 3: unsteady in step: its 90th percentile window 2.3% slower than its median one (z 17.6) - uuid GPU-00000000-1111-2222-3333-444444444444, serial 1650000000001, pci 00000000:63:00.0
+
 a straggler is any of
-  slow: a 90th percentile window above a modified z-score of 3.5 among the GPUs measured, and more than 1% slower than its node's median GPU (--outlier, --threshold)
-  unsteady: a 90th percentile window more than 1.25% slower than its own median window, above a modified z-score of 3.5 among the GPUs measured (--unsteady)
-  slow node: its median GPU's 90th percentile window more than 3% slower than the median node's (--slow-node)
+- slow: a 90th percentile window above a modified z-score of 3.5 among the GPUs measured, and more than 1% slower than its node's median GPU (--outlier, --threshold)
+- unsteady: a 90th percentile window more than 1.25% slower than its own median window, above a modified z-score of 3.5 among the GPUs measured (--unsteady)
+- slow node: its median GPU's 90th percentile window more than 3% slower than the median node's (--slow-node)
 
 runtimes:
   setup: allocating and filling the buffers     12.8s
@@ -333,15 +346,20 @@ GPU 3 of `cluster-a-3` is flagged as unsteady: its step's 90th percentile window
 On 4 healthy nodes, `cluster-a-0` to `cluster-a-2` with `cluster-a-4` in place of `cluster-a-3`, its report ends instead with:
 
 ```
-no straggler - per workload, the slowest 90th percentile window, and the largest gap between a GPU's 90th percentile and median windows:
-  step: slowest cluster-a-4 GPU 7 +1.9% (z 2.1), least steady cluster-a-0 GPU 5 +0.5% (z 1.5), slowest node cluster-a-0 +0.7%
-  matmul: slowest cluster-a-0 GPU 1 +3.4% (z 3.2), least steady cluster-a-4 GPU 3 +0.7% (z 2.4), slowest node cluster-a-0 +0.9%
-  copy: slowest cluster-a-0 GPU 0 +0.8% (z 1.7), least steady cluster-a-0 GPU 5 +0.2% (z 9.6), slowest node cluster-a-1 +0.3%
-  stream: slowest cluster-a-1 GPU 6 +0.7% (z 1.4), least steady cluster-a-4 GPU 2 +0.0% (z 4.8), slowest node cluster-a-1 +0.1%
+*************************
+*  No Stragglers Found  *
+*************************
+
+per workload, the slowest 90th percentile window, and the largest gap between a GPU's 90th percentile and median windows:
+  * step: slowest cluster-a-4 GPU 7 +1.9% (z 2.1), least steady cluster-a-0 GPU 5 +0.5% (z 1.5), slowest node cluster-a-0 +0.7%
+  * matmul: slowest cluster-a-0 GPU 1 +3.4% (z 3.2), least steady cluster-a-4 GPU 3 +0.7% (z 2.4), slowest node cluster-a-0 +0.9%
+  * copy: slowest cluster-a-0 GPU 0 +0.8% (z 1.7), least steady cluster-a-0 GPU 5 +0.2% (z 9.6), slowest node cluster-a-1 +0.3%
+  * stream: slowest cluster-a-1 GPU 6 +0.7% (z 1.4), least steady cluster-a-4 GPU 2 +0.0% (z 4.8), slowest node cluster-a-1 +0.1%
+
 a straggler is any of
-  slow: a 90th percentile window above a modified z-score of 3.5 among the GPUs measured, and more than 1% slower than its node's median GPU (--outlier, --threshold)
-  unsteady: a 90th percentile window more than 1.25% slower than its own median window, above a modified z-score of 3.5 among the GPUs measured (--unsteady)
-  slow node: its median GPU's 90th percentile window more than 3% slower than the median node's (--slow-node)
+- slow: a 90th percentile window above a modified z-score of 3.5 among the GPUs measured, and more than 1% slower than its node's median GPU (--outlier, --threshold)
+- unsteady: a 90th percentile window more than 1.25% slower than its own median window, above a modified z-score of 3.5 among the GPUs measured (--unsteady)
+- slow node: its median GPU's 90th percentile window more than 3% slower than the median node's (--slow-node)
 ```
 
 [How to find a straggler GPU](../nvidia/debug.md#how-to-find-a-straggler-gpu) shows how to record a flagged NVIDIA GPU and report it to the provider.

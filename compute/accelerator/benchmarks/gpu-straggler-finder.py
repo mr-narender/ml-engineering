@@ -716,12 +716,35 @@ def vs_reference(series, reference):
     return [[x / ref for x, ref in zip(s, refs)] for s in series]
 
 
+def banner(text):
+    """`text` in a frame of asterisks, so that the outcome stands out in the report"""
+    rule = "*" * (len(text) + 6)
+    return f"\n{rule}\n*  {text}  *\n{rule}\n"
+
+
+def counted(n, noun):
+    return f"{n} {noun}{'' if n == 1 else 's'}"
+
+
+def found(parts, where=""):
+    """The outcome banner's text, given what was flagged, e.g. ["1 GPU", "1 slow node"]"""
+    return f"Stragglers Found{where}: " + ", ".join(parts) if parts else f"No Stragglers Found{where}"
+
+
+def bullets(items, mark="  *"):
+    return "\n".join(f"{mark} {x}" for x in items)
+
+
 def report(results, args):
     def pct(v, ref):
         return 100 * (v / ref - 1)
 
+    # with --repeat the banner comes once, with the outcome of all the runs
+    final = args.repeat == 1
     bad = [r for r in results if not r["finite"]]
     if bad:
+        if final:
+            print(banner("Invalid Results: inf/NaN"))
         for r in bad:
             print(f"error: {r['host']} GPU {r['index']} computed inf/NaN, so its time is meaningless")
         return 2
@@ -820,16 +843,17 @@ def report(results, args):
     ms_sorted = sorted(r["ms"] for r in results)
     M, N, K = args.matmul_shape
     print(f"\n{len(results)} GPUs ({results[0]['name']}), {len(set(r['host'] for r in results))} node(s)")
-    print(f"step: {args.layers}x decoder layer h={args.hidden} ffn={args.ffn} heads={args.heads}/{args.kv_heads}, "
-          f"{args.batch}x{args.seqlen} tokens, bf16, forward+backward, {args.idle_ms:g}ms idle after each step - "
-          f"median {statistics.median(ms_sorted):.2f}ms, fastest {ms_sorted[0]:.2f}ms, slowest {ms_sorted[-1]:.2f}ms, "
-          f"spread {pct(ms_sorted[-1], ms_sorted[0]):.1f}%, median absolute deviation {mad_step:.2f}ms")
-    print(f"matmul: {M}x{N}x{K} bf16 back to back for {args.other_duration:g}s - "
-          + summary("TFLOPS", lambda r: r["matmul_tflops"]))
-    print(f"copy: a {args.copy_mib}MiB cudaMemcpy within each GPU's memory for {args.other_duration:g}s - "
-          + summary("GB/s read+written", lambda r: r["copy_gbps"]))
-    print(f"stream: c = a + b on {args.copy_mib}MiB buffers, on the SMs, for {args.other_duration:g}s - "
-          + summary("GB/s read+written", lambda r: r["stream_gbps"]))
+    print(bullets([
+        f"step: {args.layers}x decoder layer h={args.hidden} ffn={args.ffn} heads={args.heads}/{args.kv_heads}, "
+        f"{args.batch}x{args.seqlen} tokens, bf16, forward+backward, {args.idle_ms:g}ms idle after each step - "
+        f"median {statistics.median(ms_sorted):.2f}ms, fastest {ms_sorted[0]:.2f}ms, slowest {ms_sorted[-1]:.2f}ms, "
+        f"spread {pct(ms_sorted[-1], ms_sorted[0]):.1f}%, median absolute deviation {mad_step:.2f}ms",
+        f"matmul: {M}x{N}x{K} bf16 back to back for {args.other_duration:g}s - "
+        + summary("TFLOPS", lambda r: r["matmul_tflops"]),
+        f"copy: a {args.copy_mib}MiB cudaMemcpy within each GPU's memory for {args.other_duration:g}s - "
+        + summary("GB/s read+written", lambda r: r["copy_gbps"]),
+        f"stream: c = a + b on {args.copy_mib}MiB buffers, on the SMs, for {args.other_duration:g}s - "
+        + summary("GB/s read+written", lambda r: r["stream_gbps"])], mark="-") + "\n")
     width = max(len(r["host"]) for r in results)
 
     def cell(x, w):
@@ -866,8 +890,8 @@ def report(results, args):
         known = sum(r["vs_itself"] for r in results)
         print(f"vs the baseline {', '.join(args.baseline)}{note}, + is slower: {known} of the {len(results)} GPUs "
               f"vs themselves in it, and each node's median GPU vs the median node's of its {base['nodes']} node runs")
-        for n in nodes.values():
-            print(f"  {n['host']}: " + ", ".join(f"{w} {v:+.1f}%" for w, v in n["vs_baseline"].items()))
+        print(bullets(f"{n['host']}: " + ", ".join(f"{w} {v:+.1f}%" for w, v in n["vs_baseline"].items())
+                      for n in nodes.values()) + "\n")
     if len(nodes) > 1:
         print(f"each node's median GPU vs {node_ref_name} in the same {args.window:g}s window, + is slower: "
               f"the median window / the 90th percentile window\n")
@@ -885,10 +909,9 @@ def report(results, args):
         print(f"stalls - windows in which a node's median GPU was more than {args.stall:g}% slower than in its median "
               f"window, so all its GPUs slowed at once, which no single GPU can cause; left out of that node's "
               f"comparisons (--stall):")
-        for n in stalled:
-            print(f"  {n['host']}: " + "; ".join(
-                f"{w} {len(s['starts'])} of {s['windows']} windows, up to {s['worst']:+.1f}%, at "
-                + ", ".join(f"{t:g}" for t in s["starts"]) + "s" for w, s in n["stalls"].items()))
+        print(bullets(f"{n['host']}: " + "; ".join(
+            f"{w} {len(s['starts'])} of {s['windows']} windows, up to {s['worst']:+.1f}%, at "
+            + ", ".join(f"{t:g}" for t in s["starts"]) + "s" for w, s in n["stalls"].items()) for n in stalled))
         print()
     print(f"each workload in {args.window:g}s windows, each GPU's time vs its node's median GPU's in the same window, "
           f"+ is slower: the median window / the 90th percentile window\n")
@@ -934,6 +957,7 @@ def report(results, args):
                      f"than the baseline's median node's (--slow-node)")
     caveat = ("\nwith one node and no --baseline a node whose GPUs are all equally slow passes - run on several nodes "
               "at once, or pass --baseline" if len(nodes) == 1 and not base else "")
+    definition = "\n\na straggler is any of\n" + bullets(rules, mark="-") + caveat
     if not flagged and not flagged_nodes:
         parts = []
         for w in workloads:
@@ -953,10 +977,14 @@ def report(results, args):
                 n = max(nodes.values(), key=lambda n: n["vs_baseline"][w])
                 part += f", node vs baseline {n['host']} {n['vs_baseline'][w]:+.1f}%"
             parts.append(part)
-        print("\nno straggler - per workload, the slowest 90th percentile window, and the largest gap between a GPU's "
-              "90th percentile and median windows:\n  " + "\n  ".join(parts) + "\na straggler is any of\n  " + "\n  ".join(rules) + caveat)
+        print((banner(found([])) + "\n" if final else "\nno straggler - ") +
+              "per workload, the slowest 90th percentile window, and the largest gap between a GPU's "
+              "90th percentile and median windows:\n" + bullets(parts) + definition)
         return 0
 
+    if final:
+        print(banner(found([counted(n, noun) for n, noun in ((len(flagged), "GPU"),
+                                                            (len(flagged_nodes), "slow node")) if n])), end="")
     if flagged_nodes:
         print(f"\n{len(flagged_nodes)} slow node(s) - report them by their GPUs' serials, which don't change with the "
               f"node name:")
@@ -964,10 +992,10 @@ def report(results, args):
             reasons = ([f"slow in {w}: {n['windows'][w]['p90']:+.1f}% in its 90th percentile window, "
                         f"{n['windows'][w]['median']:+.1f}% in its median one" for w in n["slow_in"]]
                        + [f"below baseline in {w}: {n['vs_baseline'][w]:+.1f}%" for w in n["below_baseline"]])
-            print(f"  {n['host']}: {'; '.join(reasons)} - GPU serials "
-                  f"{', '.join(str(r['serial']) for r in sorted(n['gpus'], key=lambda r: str(r['index'])))}")
+            print(bullets([f"{n['host']}: {'; '.join(reasons)} - GPU serials "
+                           f"{', '.join(str(r['serial']) for r in sorted(n['gpus'], key=lambda r: str(r['index'])))}"]))
     if not flagged:
-        print("a straggler is any of\n  " + "\n  ".join(rules) + caveat)
+        print(definition[1:])
         return 3
     print(f"\n{len(flagged)} straggler(s) - report them by UUID and serial, which don't change with the node name or "
           f"the GPU's index:")
@@ -983,9 +1011,9 @@ def report(results, args):
             memory = " - slow in both memory workloads, so its HBM is slow"
         elif "stream" in r["slow_in"]:
             memory = " - slow in stream but not in copy, so its SMs are slow, not its HBM"
-        print(f"  {r['host']} GPU {r['index']}: {'; '.join(reasons)}{memory} - "
-              f"uuid {r['uuid']}, serial {r['serial']}, pci {r['pci_bus_id']}")
-    print("a straggler is any of\n  " + "\n  ".join(rules) + caveat)
+        print(bullets([f"{r['host']} GPU {r['index']}: {'; '.join(reasons)}{memory} - "
+                       f"uuid {r['uuid']}, serial {r['serial']}, pci {r['pci_bus_id']}"]))
+    print(definition[1:])
     return 3
 
 
@@ -1135,14 +1163,23 @@ def worker(local_rank, args, world_size, init_method):
             if any(s["slower_than_itself"] for s in stragglers.values()):
                 rc = 3
         if args.repeat > 1:
-            print(f"\n######## all {args.repeat} runs\n")
-            if not stragglers and not slow_nodes:
-                print("no straggler in any run, and no GPU more than "
-                      f"{args.threshold:g}% slower in a run than in its fastest one")
+            print(f"\n######## all {args.repeat} runs")
+            if rc == 2:
+                print(banner("Invalid Results: inf/NaN") + "a GPU computed inf/NaN - see the run it was in")
+            else:
+                every = sum(len(s["runs"]) == args.repeat for s in stragglers.values())
+                some = len(stragglers) - every
+                parts = ([f"{counted(every, 'GPU')} in all {args.repeat}"] * bool(every) +
+                         [f"{counted(some, 'GPU')} in some"] * bool(some) +
+                         [counted(len(slow_nodes), "slow node")] * bool(slow_nodes))
+                print(banner(found(parts, f" in {args.repeat} Runs")))
+                if not parts:
+                    print("no straggler in any run, and no GPU more than "
+                          f"{args.threshold:g}% slower in a run than in its fastest one")
             for n in slow_nodes.values():
-                print(f"  {n['host']}: a slow node in {len(n['runs'])} of {args.repeat} runs "
-                      f"(run {', '.join(map(str, n['runs']))}) - GPU serials "
-                      f"{', '.join(str(n['serials'][k]) for k in sorted(n['serials'], key=str))}")
+                print(bullets([f"{n['host']}: a slow node in {len(n['runs'])} of {args.repeat} runs "
+                               f"(run {', '.join(map(str, n['runs']))}) - GPU serials "
+                               f"{', '.join(str(n['serials'][k]) for k in sorted(n['serials'], key=str))}"]))
             for s in stragglers.values():
                 parts = []
                 if s["runs"]:
@@ -1150,10 +1187,12 @@ def worker(local_rank, args, world_size, init_method):
                                  f"(run {', '.join(map(str, s['runs']))})")
                 parts += [f"its {w} more than {args.threshold:g}% slower in run {', '.join(map(str, runs))} than in "
                           f"its fastest run" for w, runs in s["slower_than_itself"].items()]
-                print(f"  {s['host']} GPU {s['index']}: {'; '.join(parts)} - uuid {s['uuid']}, serial {s['serial']}")
+                print(bullets([f"{s['host']} GPU {s['index']}: {'; '.join(parts)} - uuid {s['uuid']}, "
+                               f"serial {s['serial']}"]))
             for host, runs in stalled_nodes.items():
-                print(f"  {host}: stalled in {len(runs)} of {args.repeat} runs (run {', '.join(map(str, runs))}) - "
-                      f"a node that stalls in most runs holds a synchronous job up as a straggler does")
+                print(bullets([f"{host}: stalled in {len(runs)} of {args.repeat} runs (run "
+                               f"{', '.join(map(str, runs))}) - a node that stalls in most runs holds a synchronous "
+                               f"job up as a straggler does"]))
         fast_to_slow = None
         # an inf/NaN invalidates the times the nodes are sorted by
         if len({r["host"] for r in repeats[0]}) > 1 and rc != 2:
